@@ -14,18 +14,18 @@ A bill payment is two different problems stapled together:
 | Part of the flow | Nature | Strategy |
 | --- | --- | --- |
 | Login, find customer, read bill, open payment page, fill card | Deterministic, same every time | Automate. Should be boring. |
-| CAPTCHA, device OTP, bank 3-D Secure challenge | Adversarial, designed to stop scripts | **Stop. Ask a human. Continue.** |
+| CAPTCHA | Puzzle with a token at the end | **Solve via service, inject token, retry 2x, then fail** |
+| Device OTP, bank 3-D Secure | Needs a phone or a bank app | **Stop. Report `needs-human`.** |
 
 Teams lose months trying to make row 2 behave like row 1. It does not, it will not,
 and the month it "works" is the month it silently breaks a card payment.
 
-The 2026 consensus, including from people selling captcha solvers, is that detection
-happens **before** any visible challenge appears — browser fingerprint, interaction
-cadence, IP reputation, ASN — so the puzzle is the last resort of a system you already
-lost. Solving the puzzle does not fix the score.
+Note the ordering trap: a solver returns a *token*, not a *pass*. If the risk score was
+already bad, a valid token still gets you challenged again on the next submit. That is
+why the retry budget is 2, not 20.
 
-Practical consequence: your automation's success metric is **"how many runs reach a
-human handoff with nothing ambiguous pending"**, not "how many captchas we beat".
+Practical consequence: the success metric is **"attempts that end `paid` on the first or
+second try, with nothing ambiguous pending"** — not "captchas beaten".
 
 ---
 
@@ -170,13 +170,15 @@ Challenges, and what to actually do:
 
 | Challenge | Frequency | Automate? | Reality in 2026 |
 | --- | --- | --- | --- |
-| Biller OTP | Common | No — hand off | TOTP only if you own the seed |
-| Captcha / Turnstile | Occasional | No — fix the cause | Solving services: fragile, ToS risk, expensive |
-| 3-D Secure challenge | Common on new devices | No — hand off | Bank-owned; automating it is a contractual problem |
+| Captcha / Turnstile / reCAPTCHA | Occasional | **Yes — solver** | Returns a token; inject it, submit again, retry max 2 |
+| Biller OTP | Common | No | Only a phone finishes this. `needs-human` |
+| 3-D Secure challenge | Common on new devices | No | Bank-owned. `needs-human` |
 | Device fingerprint check | Occasional | Yes | Persistent profile solves most of it |
 | Duplicate-payment block | Rare | Yes — read the message | Report `aborted`, not `paid` |
 
-The human-in-the-loop port is 6 lines of TypeScript (`src/core/types.ts` → `HumanGate`).
+The solver is a port (`src/core/challenge.ts` → `ChallengeSolver`): `noSolver` by default,
+`fixedSolver` for tests, `httpSolver` for CapSolver/2Captcha/any REST service. Swapping
+providers is one function, not a refactor.
 A gate that returns `null` is a `needs-human` outcome, which is a **correct result**,
 not a failure. Batch runs finish with a work queue of humans needing to act, and that is
 the intended design.
@@ -222,12 +224,12 @@ Rule: **fix items 1–4 before touching item 5.** Most teams do the reverse.
 1. **Do not retry after the submit click.** Ever. `unknown` + a human is the correct answer.
 2. **Do not put an LLM between "click pay" and "record the receipt".** Agents are fine for
    *discovery* ("find me the pay button"), fatal for *decision* ("did this succeed?").
-3. **Do not store the PAN, CVV, or unwrapped screenshots.** Mask at capture time.
-4. **Do not buy captcha solves on a payment flow.** You are paying to defeat a fraud
-   control on a page that charges a card. If you must, know it violates most providers'
-   terms and will not survive an audit.
-5. **Do not scrape the biller's internal API to "simplify" the flow** unless you have
-   confirmed it is sanctioned. It is the same authorization question with worse optics.
+3. **Do not retry a captcha more than twice.** Two failures mean the score is bad, not
+   the token. Looping turns a soft challenge into a hard block.
+4. **Do not scrape the biller's internal API to "simplify" the flow** unless you have
+   confirmed it is sanctioned. Same authorization question, worse optics.
+5. **Do not treat `failed` as "try again later".** It means the attempt exhausted its
+   budget. Read the ledger reason first.
 
 ---
 

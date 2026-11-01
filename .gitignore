@@ -1,11 +1,7 @@
 .data/
-.npm-cache/
+config/cards.json
 .playwright-browsers/
+.npm-cache/
 node_modules/
 playwright-report/
 test-results/
-*.sqlite
-*.sqlite-wal
-*.sqlite-shm
-.env
-.env.local

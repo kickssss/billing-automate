@@ -1,25 +1,19 @@
-import type { Locator, Page } from "playwright";
-import { captureEvidence } from "../../core/evidence.ts";
+import type { Page } from "playwright";
+import { capture } from "../../core/evidence.ts";
 import { formatMoney, parseMoneyText, sameMoney } from "../../core/money.ts";
 import type { Bill, BillingProvider, PaymentOutcome, RunContext } from "../../core/types.ts";
 
 const ID = "demo-bill";
-const VERSION = "2026.11.1";
+const VERSION = "2026.11.2";
 
 export interface DemoProviderOptions {
   baseUrl: string;
 }
 
-/** Fields that must never appear in an artifact. */
-const sensitive = (page: Page): Locator[] => [
-  page.getByLabel("Card number"),
-  page.getByLabel("CVV"),
-  page.getByLabel("Expiry (MM/YY)"),
-];
+type Step = "paid" | "declined" | "otp" | "captcha" | "unknown";
 
-async function text(page: Page, testId: string): Promise<string> {
-  return ((await page.getByTestId(testId).textContent()) ?? "").trim();
-}
+const text = async (page: Page, testId: string): Promise<string> =>
+  ((await page.getByTestId(testId).textContent()) ?? "").trim();
 
 async function readBill(page: Page, customerNumber: string): Promise<Bill> {
   await page.getByTestId("bill-amount").waitFor({ state: "visible" });
@@ -28,33 +22,29 @@ async function readBill(page: Page, customerNumber: string): Promise<Bill> {
   return {
     providerId: ID,
     customerNumber,
-    accountLabel: null,
     period: (await text(page, "bill-period")) || null,
-    dueDate: null,
     amount: parseMoneyText(amountText, currency),
     billReference: await text(page, "bill-reference"),
     raw: { amountText, currency },
   };
 }
 
-type Step = "paid" | "declined" | "otp" | "unknown";
-
 /**
- * After the submit click the page can legitimately land in three different
- * places. Racing the three markers is far more robust than `waitForURL` or a
- * fixed sleep, and it never throws on the "we are not sure" branch.
+ * After a submit the page can land in five places. Race the markers; never sleep.
  */
 async function detectStep(page: Page): Promise<Step> {
   const paid = page.getByTestId("receipt-reference");
   const declined = page.getByTestId("decline-code");
+  const captcha = page.getByTestId("captcha-widget");
   const otp = page.getByTestId("otp-input");
   try {
-    await paid.or(declined).or(otp).first().waitFor({ state: "visible", timeout: 30_000 });
+    await paid.or(declined).or(captcha).or(otp).first().waitFor({ state: "visible", timeout: 30_000 });
   } catch {
     return "unknown";
   }
   if (await paid.isVisible()) return "paid";
   if (await declined.isVisible()) return "declined";
+  if (await captcha.isVisible()) return "captcha";
   if (await otp.isVisible()) return "otp";
   return "unknown";
 }
@@ -64,7 +54,7 @@ export function createDemoProvider(opts: DemoProviderOptions): BillingProvider {
 
   return {
     id: ID,
-    displayName: "Demo Biller (bundled fixture site)",
+    displayName: "Demo Biller (bundled fixture)",
     version: VERSION,
 
     async lookupBill(ctx: RunContext, q): Promise<Bill> {
@@ -75,22 +65,20 @@ export function createDemoProvider(opts: DemoProviderOptions): BillingProvider {
       return readBill(page, q.customerNumber);
     },
 
-    async payBill(ctx: RunContext, req): Promise<PaymentOutcome> {
+    async payBill(ctx, req): Promise<PaymentOutcome> {
       const { page, log } = ctx;
       const bill = req.bill;
 
-      // Re-enter the flow and re-read the bill. Never pay an amount you did not
-      // observe in the same browser session you are about to submit from.
+      // Re-enter and re-read: never pay an amount you did not just see.
       await page.goto(`${base}/`, { waitUntil: "domcontentloaded" });
       await page.getByLabel("Customer number").fill(bill.customerNumber);
       await page.getByRole("button", { name: "View bill" }).click();
       const live = await readBill(page, bill.customerNumber);
-
       if (!sameMoney(live.amount, bill.amount)) {
         return {
           status: "aborted",
-          reason: `amount changed between lookup (${formatMoney(bill.amount)}) and payment (${formatMoney(live.amount)})`,
-          evidence: await captureEvidence(ctx, "amount-changed"),
+          reason: `amount changed: quoted ${formatMoney(bill.amount)}, page shows ${formatMoney(live.amount)}`,
+          evidence: await capture(ctx, "amount-changed"),
         };
       }
 
@@ -100,51 +88,58 @@ export function createDemoProvider(opts: DemoProviderOptions): BillingProvider {
       await page.getByLabel("Card number").fill(req.card.number);
       await page.getByLabel("Expiry (MM/YY)").fill(req.card.expiry);
       await page.getByLabel("CVV").fill(req.card.cvv);
-
-      // Last look before the irreversible click, with the PAN masked out.
-      const preSubmit = await captureEvidence(ctx, "before-submit", { mask: sensitive(page) });
-      log.info({ paymentUrl: preSubmit.url }, "submitting card payment");
-
       await page.getByRole("button", { name: "Confirm payment" }).click();
+
       let step = await detectStep(page);
 
-      if (step === "otp") {
-        const prompt = `OTP required to pay ${formatMoney(bill.amount)} ${bill.amount.currency} for ${bill.customerNumber}`;
-        const code = await ctx.human.ask({ kind: "otp", prompt });
-        if (!code) {
+      // CAPTCHA: hand it to the solver, inject the token, submit again.
+      if (step === "captcha") {
+        const widget = page.getByTestId("captcha-widget");
+        const siteKey = await widget.getAttribute("data-sitekey");
+        const solution = await ctx.solver.solve({
+          kind: "captcha",
+          url: page.url(),
+          siteKey,
+          image: null,
+        });
+        if (!solution) {
           return {
-            status: "needs-human",
-            reason: "otp",
-            prompt,
-            evidence: await captureEvidence(ctx, "otp-required", { mask: sensitive(page) }),
+            status: "retry",
+            reason: `captcha unsolved (solver=${ctx.solver.name})`,
+            evidence: await capture(ctx, "captcha-unsolved"),
           };
         }
-        await page.getByTestId("otp-input").fill(code);
-        await page.getByRole("button", { name: "Verify" }).click();
+        log.info({ solver: ctx.solver.name }, "captcha solved");
+        await page.getByTestId("captcha-token").fill(solution.token);
+        await page.getByRole("button", { name: "Continue" }).click();
         step = await detectStep(page);
+        if (step === "captcha") {
+          return {
+            status: "retry",
+            reason: "captcha token rejected by the biller",
+            evidence: await capture(ctx, "captcha-rejected"),
+          };
+        }
+      }
+
+      // OTP needs a phone. Not solvable here, so report it and stop.
+      if (step === "otp") {
+        return {
+          status: "needs-human",
+          reason: "otp",
+          prompt: `OTP required for ${bill.customerNumber} (${formatMoney(bill.amount)})`,
+          evidence: await capture(ctx, "otp-required"),
+        };
       }
 
       if (step === "paid") {
         const receiptId = await text(page, "receipt-reference");
         const paidAmount = parseMoneyText(await text(page, "receipt-amount"), bill.amount.currency);
-        const evidence = await captureEvidence(ctx, "receipt");
-
-        // A receipt that disagrees with the bill is a reconciliation problem,
-        // not a success: surface it as unknown so nothing auto-retries.
+        const evidence = await capture(ctx, "receipt");
         if (!sameMoney(paidAmount, bill.amount)) {
-          return {
-            status: "unknown",
-            message: `receipt ${receiptId} shows ${formatMoney(paidAmount)} but bill was ${formatMoney(bill.amount)}`,
-            evidence,
-          };
+          return { status: "unknown", message: `receipt ${receiptId} shows ${formatMoney(paidAmount)}`, evidence };
         }
-        return {
-          status: "paid",
-          receiptId,
-          paidAt: new Date().toISOString(),
-          amount: paidAmount,
-          evidence,
-        };
+        return { status: "paid", receiptId, paidAt: new Date().toISOString(), amount: paidAmount, evidence };
       }
 
       if (step === "declined") {
@@ -152,16 +147,14 @@ export function createDemoProvider(opts: DemoProviderOptions): BillingProvider {
           status: "declined",
           code: (await text(page, "decline-code")) || null,
           message: (await text(page, "decline-message")) || "declined",
-          evidence: await captureEvidence(ctx, "declined"),
+          evidence: await capture(ctx, "declined"),
         };
       }
 
-      // The third branch that everyone forgets: we clicked, and we genuinely do
-      // not know. Report it; never retry it.
       return {
         status: "unknown",
-        message: "no receipt, decline or OTP marker appeared after submit",
-        evidence: await captureEvidence(ctx, "unknown-after-submit"),
+        message: "no receipt, decline, captcha or OTP marker after submit",
+        evidence: await capture(ctx, "unknown-after-submit"),
       };
     },
   };
