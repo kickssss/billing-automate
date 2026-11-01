@@ -6,7 +6,6 @@ export interface SessionOptions {
   providerId: string;
   dataDir?: string;
   artifactsDir?: string;
-  headless?: boolean;
 }
 
 export interface Session {
@@ -15,10 +14,13 @@ export interface Session {
 }
 
 /**
- * One persistent profile per biller.
+ * One persistent profile per biller, always in a visible window.
  *
  * Not about stealth: the profile holds the login. A fresh context every run means
  * logging in every run, which means an OTP every run.
+ *
+ * Headed is not configurable on purpose. A payment you cannot watch is a payment
+ * you find out about from your bank statement.
  */
 export async function openSession(opts: SessionOptions): Promise<Session> {
   const root = opts.dataDir ?? process.env.DATA_DIR ?? ".data";
@@ -28,7 +30,7 @@ export async function openSession(opts: SessionOptions): Promise<Session> {
   await mkdir(artifactsDir, { recursive: true });
 
   const context: BrowserContext = await chromium.launchPersistentContext(profileDir, {
-    headless: opts.headless ?? process.env.HEADED !== "1",
+    headless: false,
     viewport: { width: 1280, height: 900 },
     locale: "en-IN",
     timezoneId: "Asia/Kolkata",

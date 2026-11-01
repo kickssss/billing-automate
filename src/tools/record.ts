@@ -24,7 +24,6 @@ interface Args {
   provider: string;
   url: string;
   seconds: number;
-  headless: boolean;
   dataDir: string;
 }
 
@@ -36,13 +35,12 @@ function parseArgs(argv: string[]): Args {
   const provider = get("--provider");
   const url = get("--url");
   if (!provider || !url) {
-    throw new Error("usage: record --provider <id> --url <start-url> [--seconds N] [--headless]");
+    throw new Error("usage: record --provider <id> --url <start-url> [--seconds N]");
   }
   return {
     provider,
     url,
     seconds: Number(get("--seconds") ?? 0),
-    headless: argv.includes("--headless"),
     dataDir: process.env.DATA_DIR ?? ".data",
   };
 }
@@ -53,7 +51,7 @@ const outDir = join(args.dataDir, "recordings", args.provider, stamp);
 await mkdir(outDir, { recursive: true });
 
 const context = await chromium.launchPersistentContext(join(args.dataDir, "profiles", args.provider), {
-  headless: args.headless,
+  headless: false, // always watched: you are the one doing the flow
   viewport: { width: 1400, height: 950 },
   acceptDownloads: true,
 });
@@ -89,16 +87,12 @@ console.log(`\nrecording -> ${outDir}`);
 console.log("do the flow in the browser window, then come back here.");
 console.log("press Enter when you are done (or just close the window).\n");
 
-if (!args.headless) {
-  if (args.seconds > 0) {
-    await new Promise((r) => setTimeout(r, args.seconds * 1000));
-  } else {
-    const rl = createInterface({ input: process.stdin, output: process.stderr });
-    await rl.question("");
-    rl.close();
-  }
+if (args.seconds > 0) {
+  await new Promise((r) => setTimeout(r, args.seconds * 1000));
 } else {
-  await new Promise((r) => setTimeout(r, Math.max(args.seconds, 1) * 1000));
+  const rl = createInterface({ input: process.stdin, output: process.stderr });
+  await rl.question("");
+  rl.close();
 }
 
 // The human may have closed the window; everything below tolerates that.

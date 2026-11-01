@@ -208,8 +208,9 @@ bands: 1 = certain bot, 30–99 = likely human):
    A fresh incognito context every run is the loudest possible signal.
 3. **Human cadence** — one login per month, a few seconds between fields. You are paying
    a bill, not scraping 25,000 pages; volume is a choice you are making wrong.
-4. **Headless vs headed** — headless matters less than it did, but headed removes an
-   entire class of checks for free. Use `--headed` in production if it is a desktop tool.
+4. **Headed, always** — headless matters less than it did, but headed removes an entire
+   class of checks for free. This tool never runs headless: a payment you cannot watch
+   is a payment you learn about from your bank statement.
 5. **Stealth patches** — `patchright` (1.64.2), `camoufox` (0.13.0), `rebrowser-patches`
    exist and do work for scraping at scale. For a monthly bill payment they are
    unnecessary complexity with a real downside: they lag Playwright releases and change
@@ -253,7 +254,7 @@ answer only when the biller offers nothing else.
 ## Definition of done, per provider
 
 - [ ] Branch table filled in, every row mapped to an outcome
-- [ ] `lookup` succeeds 3× consecutively, headless, no manual step
+- [ ] `lookup` succeeds 3× consecutively, no manual step
 - [ ] Offline contract tests pass
 - [ ] One live payment, receipt id stored, screenshot on disk
 - [ ] Duplicate payment attempt is refused by the ledger

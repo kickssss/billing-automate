@@ -57,7 +57,7 @@ map.set(acme.id, acme);
 ### 5. Read-only until it is boring
 
 ```bash
-node src/cli.ts lookup --provider <id> --customer <number> --amount <rupees> --headed
+node src/cli.ts lookup --provider <id> --customer <number> --amount <rupees>
 ```
 
 Repeat until it works 10 times in a row. Moves no money.
@@ -165,9 +165,9 @@ docs/PLAYBOOK.md   how to build an adapter for a new provider
 ```
 providers                                  list registered providers
 lookup   --provider --customer             read the charge, never pays
-         [--amount N] [--headed]
+         [--amount N]
 pay      --provider --customer --card      dry-run by default
-         [--live] [--amount N] [--max-amount N] [--attempts N] [--headed]
+         [--live] [--amount N] [--max-amount N] [--attempts N]
 ledger   [--limit N]                       recent attempts
 ```
 
@@ -190,5 +190,4 @@ in the ledger.
 | `DATA_DIR` | `.data` | profiles, artifacts, ledger |
 | `CARDS_FILE` | `config/cards.json` | card store |
 | `SOLVER_URL` / `SOLVER_KEY` | unset | enable captcha solving |
-| `HEADED` | unset | `1` shows the browser |
 | `LOG_LEVEL` | info | `silent` or `debug` |

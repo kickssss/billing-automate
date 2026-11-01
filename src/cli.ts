@@ -14,12 +14,12 @@ program.name("billing").description("Bill payment automation").version("0.2.0");
 
 const dataDir = (): string => process.env.DATA_DIR ?? ".data";
 
-async function withSession<T>(providerId: string, headed: boolean, fn: (ctx: RunContext) => Promise<T>): Promise<T> {
+async function withSession<T>(providerId: string, fn: (ctx: RunContext) => Promise<T>): Promise<T> {
   const runId = new Date().toISOString().replace(/[:.]/g, "-");
   const artifactsDir = join(dataDir(), "artifacts", providerId, runId);
   await mkdir(artifactsDir, { recursive: true });
 
-  const session = await openSession({ providerId, dataDir: dataDir(), artifactsDir, headless: !headed });
+  const session = await openSession({ providerId, dataDir: dataDir(), artifactsDir });
   try {
     return await fn({ page: session.page, log: createLogger(), solver: loadSolver(), artifactsDir });
   } finally {
@@ -45,12 +45,11 @@ program
   .requiredOption("--provider <id>")
   .requiredOption("--customer <number>")
   .option("--amount <rupees>", "recharge providers: the plan price to target")
-  .option("--headed", "show the browser")
-  .action(async (opts: { provider: string; customer: string; amount?: string; headed?: boolean }) => {
+  .action(async (opts: { provider: string; customer: string; amount?: string }) => {
     const provider = getProvider(opts.provider);
     const ledger = new Ledger(join(dataDir(), "ledger.sqlite"));
     try {
-      report(await withSession(opts.provider, Boolean(opts.headed), (ctx) =>
+      report(await withSession(opts.provider, (ctx) =>
         runPayment(ctx, {
           provider, ledger,
           query: {
@@ -71,9 +70,8 @@ program
   .option("--live", "actually submit")
   .option("--amount <rupees>", "recharge providers: the plan price to target")
   .option("--max-amount <rupees>", "per-payment ceiling", "5000")
-  .option("--attempts <n>", "retries for a non-submitted attempt", "3")
-  .option("--headed", "show the browser")
-  .action(async (opts: { provider: string; customer: string; card: string; live?: boolean; amount?: string; maxAmount: string; attempts: string; headed?: boolean }) => {
+  .option("--attempts <n>", "retries for a non-submitted attempt", "1")
+  .action(async (opts: { provider: string; customer: string; card: string; live?: boolean; amount?: string; maxAmount: string; attempts: string }) => {
     const provider = getProvider(opts.provider);
     const card = await getCard(opts.card);
     assertCardUsable(card);
@@ -81,7 +79,7 @@ program
     const mode = opts.live ? "live" : "dry-run";
     console.error(JSON.stringify({ provider: provider.id, customer: opts.customer, card: opts.card, mode }));
     try {
-      report(await withSession(opts.provider, Boolean(opts.headed), (ctx) =>
+      report(await withSession(opts.provider, (ctx) =>
         runPayment(ctx, {
           provider, ledger,
           query: {
