@@ -1,5 +1,17 @@
 # billing-automate
 
+> ## ⚠️ Dummy test project
+>
+> **This is a throwaway test build, not payment software.** It was written to find
+> out whether a biller's flow could be transcribed into a script at all. It has
+> never completed a verified real payment, it has no test suite against a live
+> biller, and it has already recorded one false "paid".
+>
+> The card in `config/cards.example.json`, `4111 1111 1111 1111`, is a Stripe
+> **test** PAN. Real gateways decline it.
+>
+> Do not point this at a bill you actually need paid.
+
 Drives a provider's website with Playwright: read the charge, confirm the amount,
 pay with a debit/prepaid card, record what happened. One adapter per provider;
 one engine for all of them.
