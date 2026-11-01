@@ -256,25 +256,38 @@ export function createJioProvider(): BillingProvider {
       const { page, log } = ctx;
       const bill = req.bill;
 
-      // Re-read the catalogue in this session: never pay a price you have not just seen.
-      const plans = await openPlans(ctx, bill.customerNumber);
-      const plan = plans.find((p) => p.id === bill.raw.planId);
-      if (!plan) {
+      // Everything up to the Buy click is pre-submit: if it breaks, nothing was
+      // charged, so report "retry" (the engine may try again) instead of letting
+      // the throw become a scary "unknown".
+      let plan: JioPlan;
+      try {
+        // Re-read the catalogue in this session: never pay a price you have not just seen.
+        const plans = await openPlans(ctx, bill.customerNumber);
+        const found = plans.find((p) => p.id === bill.raw.planId);
+        if (!found) {
+          return {
+            status: "aborted",
+            reason: "plan " + bill.raw.planId + " is no longer offered",
+            evidence: await capture(ctx, "plan-gone"),
+          };
+        }
+        if (!sameMoney(bill.amount, { amountMinor: rupeesToMinor(found.amount), currency: "INR" })) {
+          return {
+            status: "aborted",
+            reason: "price changed: quoted " + formatMoney(bill.amount) + ", page shows " + found.amount,
+            evidence: await capture(ctx, "price-changed"),
+          };
+        }
+        await clickBuy(ctx, found);
+        plan = found;
+      } catch (err) {
         return {
-          status: "aborted",
-          reason: "plan " + bill.raw.planId + " is no longer offered",
-          evidence: await capture(ctx, "plan-gone"),
-        };
-      }
-      if (!sameMoney(bill.amount, { amountMinor: rupeesToMinor(plan.amount), currency: "INR" })) {
-        return {
-          status: "aborted",
-          reason: "price changed: quoted " + formatMoney(bill.amount) + ", page shows " + plan.amount,
-          evidence: await capture(ctx, "price-changed"),
+          status: "retry",
+          reason: "pre-submit step failed: " + (err as Error).message,
+          evidence: await capture(ctx, "pre-submit-error"),
         };
       }
 
-      await clickBuy(ctx, plan);
       const screen = await afterBuy(ctx);
       log.info({ screen, url: page.url() }, "left the plan page");
 
