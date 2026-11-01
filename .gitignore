@@ -1,0 +1,11 @@
+.data/
+.npm-cache/
+.playwright-browsers/
+node_modules/
+playwright-report/
+test-results/
+*.sqlite
+*.sqlite-wal
+*.sqlite-shm
+.env
+.env.local
