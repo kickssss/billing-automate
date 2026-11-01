@@ -278,37 +278,44 @@ async function fillCard(ctx: RunContext, card: Card): Promise<boolean> {
     name: card.nameOnCard,
   };
 
+  /** Fill, then read the value back. A fill that silently fails must not count. */
   const fillOne = async (field: keyof typeof CARD_FIELDS): Promise<boolean> => {
     const deadline = Date.now() + (field === "number" ? 15_000 : 10_000);
     while (Date.now() < deadline) {
       const loc = await findInFrames(page, CARD_FIELDS[field]);
       if (loc) {
         await loc.fill(values[field]).catch(() => undefined);
-        return true;
+        const got = (await loc.inputValue().catch(() => "")).replace(/\s+/g, "");
+        const want = values[field].replace(/\s+/g, "");
+        if (got.length > 0 && got.replace(/[*\u2022]/g, "").startsWith(want.slice(0, 4))) return true;
+        await page.waitForTimeout(600);
+        continue;
       }
       await page.waitForTimeout(600);
     }
     return false;
   };
 
-  let filled = 0;
+  const done: string[] = [];
+  const missing: string[] = [];
   for (const field of ["number", "expiry", "cvv", "name"] as Array<keyof typeof CARD_FIELDS>) {
-    if (await fillOne(field)) filled++;
-    // The card number is the one field that must be there.
-    if (field === "number" && filled === 0) return false;
+    if (await fillOne(field)) done.push(field);
+    else missing.push(field);
+    if (field === "number" && done.length === 0) return false;
   }
-  return filled >= 3;
+  return done.length >= 3;
 }
 
-/** Submit the card and read whatever the gateway and the biller say next. */
-async function submitCard(ctx: RunContext): Promise<boolean> {
+/** Submit the card. Returns the button label it clicked, or null. */
+async function submitCard(ctx: RunContext): Promise<string | null> {
   const { page } = ctx;
   const button = page
     .getByRole("button", { name: /pay now|make payment|^pay$|proceed|confirm|continue|add card|save card/i })
     .first();
-  if (!(await button.isVisible().catch(() => false))) return false;
+  if (!(await button.isVisible().catch(() => false))) return null;
+  const label = ((await button.innerText().catch(() => "")) || "submit").trim() || "submit";
   await button.click().catch(() => undefined);
-  return true;
+  return label;
 }
 
 const SUCCESS = /payment successful|recharge successful|successful|thank you|receipt|transaction complete/i;
@@ -326,12 +333,17 @@ const RECEIPT = /(?:transaction|order|reference|receipt)\s*(?:id|no|number)?\s*[
  */
 async function observeOutcome(ctx: RunContext, bill: Bill): Promise<PaymentOutcome> {
   const { page, log } = ctx;
-  const deadline = Date.now() + 150_000;
+  const started = Date.now();
+  const deadline = started + 90_000;
   let lastUrl = page.url();
+  let tick = 0;
 
   while (Date.now() < deadline) {
+    tick++;
     lastUrl = page.url();
     const text = await page.locator("body").innerText().catch(() => "");
+    // Progress on stderr every poll: a silent 90s looks like a hang.
+    log.info({ tick, elapsed: Math.round((Date.now() - started) / 1000), url: lastUrl.slice(0, 90) }, "waiting for outcome");
 
     if (SUCCESS.test(text) && !REFUSED.test(text)) {
       const receiptId = RECEIPT.exec(text)?.[1] ?? "JIO-" + bill.customerNumber + "-" + Date.now();
@@ -372,7 +384,7 @@ async function observeOutcome(ctx: RunContext, bill: Bill): Promise<PaymentOutco
 
   return {
     status: "failed",
-    reason: "no success or failure marker within 150s; last url " + lastUrl,
+    reason: "no success or failure marker within 90s; last url " + lastUrl,
     evidence: await capture(ctx, "no-outcome"),
   };
 }
@@ -408,7 +420,7 @@ export function createJioProvider(): BillingProvider {
     },
 
     async payBill(ctx, req): Promise<PaymentOutcome> {
-      const { page } = ctx;
+      const { page, log } = ctx;
       const bill = req.bill;
 
       // ---- pre-submit: any failure here charged nothing, so it is retryable.
@@ -456,16 +468,24 @@ export function createJioProvider(): BillingProvider {
         };
       }
 
+      // Keep the card page markup no matter how this ends: it is the only way to
+      // learn selectors for a screen nobody has transcribed yet.
+      const cardDom = await dumpDom(ctx, "card-page");
+      log.info({ url: page.url(), html: cardDom }, "card form opened");
+
       if (!(await fillCard(ctx, req.card))) {
         const dom = await dumpDom(ctx, "card-form-unknown");
         return {
           status: "failed",
-          reason: "card form not recognised on " + page.url() + (dom ? " (html: " + dom + ")" : ""),
+          reason: "could not fill the card form on " + page.url() + (dom ? " (html: " + dom + ")" : ""),
           evidence: await capture(ctx, "card-form-unknown"),
         };
       }
 
-      if (!(await submitCard(ctx))) {
+      await capture(ctx, "card-filled");
+
+      const submitLabel = await submitCard(ctx);
+      if (!submitLabel) {
         const dom = await dumpDom(ctx, "no-submit-button");
         return {
           status: "failed",
@@ -473,6 +493,7 @@ export function createJioProvider(): BillingProvider {
           evidence: await capture(ctx, "no-submit-button"),
         };
       }
+      log.info({ submitLabel }, "card submitted");
 
       // ---- post-submit: from here on the card may be charged.
       return observeOutcome(ctx, bill);
