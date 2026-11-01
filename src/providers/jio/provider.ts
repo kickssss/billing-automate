@@ -204,32 +204,71 @@ async function waitForGateway(ctx: RunContext, amountMinor: number): Promise<boo
   return shown;
 }
 
-/** The gateway lists payment modes first; open the card one. */
-const CARD_OPTION = /debit card|credit card|cards?|add new card|add card/i;
+/**
+ * The gateway's payment-picker. Captured markup from the live run shows the
+ * options as design-system list rows, not buttons:
+ *
+ *   "How would you want to pay?"
+ *     UPI · Pay via QR · CRED pay · Credit/Debit/ATM Card · Wallets
+ *     Pay With Rewards · Netbanking · Pay With Store credit · [Proceed]
+ *
+ * The label is "Credit/Debit/ATM Card". Each row is
+ * <div class="j-listBlock"> ... <div class="j-listBlock__block-text">label</div>
+ * and clicking the row navigates to /JpgWebApp/add-new-card/.
+ */
+const CARD_OPTION = /credit\s*\/\s*debit|debit\s*\/\s*credit|credit\s*debit|debit\s*card|credit\s*card|atm\s*card|^card$/i;
+const CARD_ROUTE = /add-new-card/i;
+
+/** Poll for the card form. The route change and the field mount are separate events. */
+async function waitForCardForm(ctx: RunContext, timeoutMs = 30_000): Promise<boolean> {
+  const { page } = ctx;
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    if (await findInFrames(page, CARD_FIELDS.number)) return true;
+    await page.waitForTimeout(800);
+  }
+  return false;
+}
 
 async function chooseCardOption(ctx: RunContext): Promise<boolean> {
   const { page, log } = ctx;
 
   if (await findInFrames(page, CARD_FIELDS.number)) return true;
 
-  const groups = [
-    page.getByRole("button", { name: CARD_OPTION }),
-    page.getByRole("link", { name: CARD_OPTION }),
-    page.getByRole("radio", { name: CARD_OPTION }),
-    page.getByText(CARD_OPTION),
-  ];
-
-  for (const group of groups) {
-    if ((await group.count().catch(() => 0)) === 0) continue;
-    await group.first().click().catch(() => undefined);
-    if (await findInFrames(page, CARD_FIELDS.number)) {
+  // 1. The list row, matched on its stable design-system container.
+  const row = page.locator(".j-listBlock").filter({ hasText: CARD_OPTION }).first();
+  if (await row.isVisible().catch(() => false)) {
+    await row.click().catch(() => undefined);
+    if (await waitForCardForm(ctx)) {
       log.info({ url: page.url() }, "card option opened");
       return true;
     }
   }
+
+  // 2. Fall back to whatever carries the label, but click the row around it.
+  const labelled = page.getByText(CARD_OPTION).first();
+  if (await labelled.isVisible().catch(() => false)) {
+    await labelled.click().catch(() => undefined);
+    if (await waitForCardForm(ctx, 15_000)) {
+      log.info({ url: page.url() }, "card option opened via label");
+      return true;
+    }
+  }
+
+  // 3. Some builds pick the mode first and require Proceed.
+  const proceed = page.getByRole("button", { name: /proceed/i }).first();
+  if (await proceed.isVisible().catch(() => false)) {
+    await proceed.click().catch(() => undefined);
+    if (await waitForCardForm(ctx, 15_000)) return true;
+  }
+
   return false;
 }
 
+/**
+ * Fill the card. Number first: most gateways reveal expiry and CVV only after
+ * the BIN is accepted, so the later fields get their own short wait.
+ */
 async function fillCard(ctx: RunContext, card: Card): Promise<boolean> {
   const { page } = ctx;
   const values: Record<keyof typeof CARD_FIELDS, string> = {
@@ -239,12 +278,24 @@ async function fillCard(ctx: RunContext, card: Card): Promise<boolean> {
     name: card.nameOnCard,
   };
 
+  const fillOne = async (field: keyof typeof CARD_FIELDS): Promise<boolean> => {
+    const deadline = Date.now() + (field === "number" ? 15_000 : 10_000);
+    while (Date.now() < deadline) {
+      const loc = await findInFrames(page, CARD_FIELDS[field]);
+      if (loc) {
+        await loc.fill(values[field]).catch(() => undefined);
+        return true;
+      }
+      await page.waitForTimeout(600);
+    }
+    return false;
+  };
+
   let filled = 0;
-  for (const field of Object.keys(CARD_FIELDS) as Array<keyof typeof CARD_FIELDS>) {
-    const loc = await findInFrames(page, CARD_FIELDS[field]);
-    if (!loc) continue;
-    await loc.fill(values[field]).catch(() => undefined);
-    filled++;
+  for (const field of ["number", "expiry", "cvv", "name"] as Array<keyof typeof CARD_FIELDS>) {
+    if (await fillOne(field)) filled++;
+    // The card number is the one field that must be there.
+    if (field === "number" && filled === 0) return false;
   }
   return filled >= 3;
 }
@@ -253,7 +304,7 @@ async function fillCard(ctx: RunContext, card: Card): Promise<boolean> {
 async function submitCard(ctx: RunContext): Promise<boolean> {
   const { page } = ctx;
   const button = page
-    .getByRole("button", { name: /pay now|make payment|pay|proceed|confirm|continue|add card/i })
+    .getByRole("button", { name: /pay now|make payment|^pay$|proceed|confirm|continue|add card|save card/i })
     .first();
   if (!(await button.isVisible().catch(() => false))) return false;
   await button.click().catch(() => undefined);
