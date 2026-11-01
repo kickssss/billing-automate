@@ -178,41 +178,58 @@ async function findCardField(page: Page, field: CardFieldName): Promise<Locator 
  * The inputs carry no autocomplete or placeholder, so labels are the reliable
  * handle. Each field is tried by CSS, then by its visible label.
  */
-const CARD_FIELDS = {
+/**
+ * Card form fields, read off the captured add-new-card markup. JioPay puts the
+ * human label in the name attribute, uses no autocomplete, and gives only the
+ * first input an id:
+ *
+ *   <input id="cardNumber" name="Card number">
+ *   <input name="Expiry (MM/YY)">
+ *   <input name="CVV" type="password">
+ *   <input name="Name on the card">
+ *
+ * Exact name matches first; the loose patterns stay as a fallback for the day
+ * they rename something. Verified offline against the saved page with
+ * scripts/verify-selectors.ts.
+ */
+export const CARD_FIELDS = {
   number: {
     css: [
+      "#cardNumber",
+      'input[name="Card number"]',
+      'input[name*="card number" i]',
       'input[autocomplete="cc-number"]',
-      'input[name*="cardNumber" i]',
       'input[id*="cardNumber" i]',
-      'input[placeholder*="card number" i]',
     ],
     label: /card number/i,
   },
   expiry: {
     css: [
-      'input[autocomplete="cc-exp"]',
+      'input[name="Expiry (MM/YY)"]',
       'input[name*="expiry" i]',
-      'input[id*="expiry" i]',
+      'input[autocomplete="cc-exp"]',
+      "input[id*='expiry' i]",
       'input[placeholder*="mm" i]',
     ],
     label: /expiry|mm\s*\/\s*yy/i,
   },
   cvv: {
     css: [
-      'input[autocomplete="cc-csc"]',
+      'input[name="CVV"]',
       'input[name*="cvv" i]',
-      'input[id*="cvv" i]',
+      'input[autocomplete="cc-csc"]',
+      "input[id*='cvv' i]",
       'input[placeholder*="cvv" i]',
     ],
     label: /cvv|cvc|security code/i,
   },
   name: {
     css: [
+      'input[name="Name on the card"]',
+      'input[name*="name on the card" i]',
+      'input[name*="name on card" i]',
       'input[autocomplete="cc-name"]',
       'input[name*="cardHolder" i]',
-      'input[name*="nameOnCard" i]',
-      'input[id*="cardName" i]',
-      'input[placeholder*="name on card" i]',
     ],
     label: /name on the card|name on card|cardholder/i,
   },
