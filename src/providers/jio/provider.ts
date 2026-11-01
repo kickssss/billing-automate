@@ -25,7 +25,7 @@
  * No captcha anywhere in the recorded flow.
  */
 import type { Page } from "playwright";
-import { capture } from "../../core/evidence.ts";
+import { capture, dumpDom } from "../../core/evidence.ts";
 import { formatMoney, sameMoney } from "../../core/money.ts";
 import type { Bill, BillingProvider, Card, PaymentOutcome, RunContext } from "../../core/types.ts";
 
@@ -310,11 +310,16 @@ export function createJioProvider(): BillingProvider {
       // Card entry: the part the recording does not cover.
       const ok = await fillCard(ctx, req.card);
       if (!ok) {
+        const evidence = await capture(ctx, "card-form-unknown");
+        const dom = await dumpDom(ctx, "card-form-unknown");
         return {
           status: "needs-human",
           reason: "otp",
-          prompt: "card form not recognised on " + page.url() + " — read the screenshot, then fix CARD_FIELDS",
-          evidence: await capture(ctx, "card-form-unknown"),
+          prompt:
+            "card form not recognised on " + page.url() +
+            (dom ? " — HTML saved to " + dom : "") +
+            "; fix CARD_FIELDS from it",
+          evidence,
         };
       }
 
