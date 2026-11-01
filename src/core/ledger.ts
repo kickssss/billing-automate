@@ -163,6 +163,25 @@ export class Ledger {
     return { ok: true };
   }
 
+  /**
+   * Correct a "paid" row that was recorded without proof.
+   *
+   * A false paid is worse than a false failed: it stops anyone from paying a
+   * bill that is still unpaid. This rewrites the row in place — the original
+   * state stays in the detail — and only works on paid rows.
+   */
+  voidPaid(id: string, reason: string): { ok: true; record: PaymentRecord } | { ok: false; reason: string } {
+    const row = this.get(id);
+    if (!row) return { ok: false, reason: "no such payment" };
+    if (row.state !== "paid") return { ok: false, reason: `only a paid row can be voided (this one is "${row.state}")` };
+    this.#db
+      .prepare("UPDATE payment SET state = 'failed', detail = ?, updated_at = ? WHERE id = ?")
+      .run(`voided from paid: ${reason}`, now(), id);
+    const updated = this.get(id);
+    if (!updated) return { ok: false, reason: "row vanished during void" };
+    return { ok: true, record: updated };
+  }
+
   recent(limit = 20): PaymentRecord[] {
     const rows = this.#db.prepare("SELECT * FROM payment ORDER BY created_at DESC LIMIT ?").all(limit) as unknown as Row[];
     return rows.map(toRecord);

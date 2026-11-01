@@ -98,9 +98,17 @@ program
   .description("recent attempts, or forget one so it can be retested")
   .option("--limit <n>", "rows", "20")
   .option("--forget <id>", "delete a failed/aborted row so the same plan can run again")
-  .action((opts: { limit: string; forget?: string }) => {
+  .option("--void <id>", "correct a paid row that was recorded without proof")
+  .option("--reason <text>", "why the paid row is being voided", "no proof of payment")
+  .action((opts: { limit: string; forget?: string; void?: string; reason: string }) => {
     const ledger = new Ledger(join(dataDir(), "ledger.sqlite"));
     try {
+      if (opts.void) {
+        const r = ledger.voidPaid(opts.void, opts.reason);
+        console.log(r.ok ? `voided ${opts.void} -> ${r.record.state}` : `not voided: ${r.reason}`);
+        if (!r.ok) process.exitCode = 1;
+        return;
+      }
       if (opts.forget) {
         const r = ledger.forget(opts.forget);
         console.log(r.ok ? `forgotten ${opts.forget}` : `not forgotten: ${r.reason}`);

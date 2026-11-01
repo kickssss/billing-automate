@@ -392,8 +392,21 @@ async function submitCard(ctx: RunContext): Promise<SubmitResult> {
   return { label };
 }
 
-const SUCCESS = /payment successful|recharge successful|successful|thank you|receipt|transaction complete/i;
-const REFUSED = /declined|not successful|failed|unable to process|invalid card|rejected|transaction failed/i;
+/**
+ * Where a result is allowed to come from.
+ *
+ * A marketing banner on the gateway page reads "Get up to Rs.20 Cashback On
+ * Successful Mandate Registration". A /successful/i test matched that and a run
+ * was recorded as paid while the card payment was still processing. Success is
+ * therefore not a phrase — it is a place: the biller's own result page plus a
+ * real transaction id. Nothing on the gateway's pages can ever be "paid".
+ */
+const BILLER_RESULT = /jio\.com\/selfcare\/recharge\/(status|receipt|confirmation)/i;
+const GATEWAY_HOST = /pay\.jio\.com|paytm/i;
+
+const SUCCESS_TEXT = /(recharge|payment)\s+(is\s+|was\s+)?(successful|completed|complete|done)|your recharge (was|is) successful|recharge successful|payment successful/i;
+const PROCESSING_TEXT = /processing|in progress|pending|please wait|awaiting confirmation/i;
+const REFUSED = /declined|not successful|unable to process|invalid card|rejected|transaction failed|payment failed|recharge failed/i;
 const REFUSED_CODE = /(?:declin\w*|fail\w*)[^0-9]{0,20}(\d{2,3})/i;
 const RECEIPT = /(?:transaction|order|reference|receipt)\s*(?:id|no|number)?\s*[:\-]?\s*([A-Z0-9][A-Z0-9\-]{5,})/i;
 
@@ -419,15 +432,29 @@ async function observeOutcome(ctx: RunContext, bill: Bill): Promise<PaymentOutco
     // Progress on stderr every poll: a silent 90s looks like a hang.
     log.info({ tick, elapsed: Math.round((Date.now() - started) / 1000), url: lastUrl.slice(0, 90) }, "waiting for outcome");
 
-    if (SUCCESS.test(text) && !REFUSED.test(text)) {
-      const receiptId = RECEIPT.exec(text)?.[1] ?? "JIO-" + bill.customerNumber + "-" + Date.now();
-      log.info({ receiptId, url: lastUrl }, "payment reported successful");
+    // Paid requires all three: the biller's result page, a success phrase, and
+    // an id printed by the biller. No id means no proof, so no "paid".
+    const onBillerResult = BILLER_RESULT.test(lastUrl) && !GATEWAY_HOST.test(lastUrl);
+    const receiptId = RECEIPT.exec(text)?.[1] ?? null;
+
+    if (onBillerResult && SUCCESS_TEXT.test(text) && !REFUSED.test(text) && receiptId) {
+      log.info({ receiptId, url: lastUrl }, "payment confirmed by the biller");
       return {
         status: "paid",
         receiptId,
         paidAt: new Date().toISOString(),
         amount: bill.amount,
         evidence: await capture(ctx, "paid"),
+      };
+    }
+
+    // On the biller's page with no id we saw a phrase, but nothing provable.
+    if (onBillerResult && SUCCESS_TEXT.test(text) && !receiptId) {
+      log.warn({ url: lastUrl }, "result page has no transaction id");
+      return {
+        status: "failed",
+        reason: "biller result page showed success text but no transaction id; unconfirmed at " + lastUrl,
+        evidence: await capture(ctx, "unconfirmed-no-id"),
       };
     }
 
@@ -456,6 +483,16 @@ async function observeOutcome(ctx: RunContext, bill: Bill): Promise<PaymentOutco
     await page.waitForTimeout(2500);
   }
 
+  // Timed out. If the page was still saying "processing", the honest answer is
+  // a failure we do not retry: the card may have been charged.
+  const finalText = await page.locator("body").innerText().catch(() => "");
+  if (PROCESSING_TEXT.test(finalText)) {
+    return {
+      status: "failed",
+      reason: "payment still processing after 90s at " + lastUrl + " — check the card statement before retrying",
+      evidence: await capture(ctx, "still-processing"),
+    };
+  }
   return {
     status: "failed",
     reason: "no success or failure marker within 90s; last url " + lastUrl,
