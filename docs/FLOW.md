@@ -23,31 +23,32 @@ Everything else in the repo exists to support those seven lines.
 ## The attempt loop (step 6)
 
 ```
-attempt 1 ──► paid / declined / needs-human / unknown  ──► stop, settle
-          └─► retry (nothing was submitted) ──► attempt 2 ──► ... ──► attempt 3
+attempt 1 ──► paid / declined / failed  ──► stop, settle
+          └─► retry (nothing was submitted) ──► attempt 2 ──► ... ──► attempt N
                                                                       └─► settle as FAILED
 ```
 
 `retry` is the only outcome that loops. An adapter returns it **only** when it knows
-the card was not charged — captcha unsolved, token rejected, page never loaded.
+the card was not charged — process failed before the submit click, page never loaded.
 
-Anything that could have touched the card returns `paid`, `declined`, `unknown` or
-`needs-human`, which all stop the loop immediately.
+Anything that could have touched the card returns `paid`, `declined` or `failed`,
+which all stop the loop immediately.
 
 ---
 
-## Six outcomes, and who produces them
+## Five outcomes, and who produces them
 
 | Outcome | Meaning | Produced when | Ledger state |
 | --- | --- | --- | --- |
-| `paid` | biller confirmed | receipt page with a receipt id | `paid` |
-| `declined` | processor said no | decline page / error code | `declined` |
-| `needs-human` | OTP or 3DS | challenge that needs a phone | `needs-human` |
-| `unknown` | submitted, no proof | adapter threw, or no marker appeared | `unknown` |
-| `retry` | nothing submitted | captcha unsolved / token rejected | `failed` (after last attempt) |
+| `paid` | biller confirmed | success marker on the page | `paid` |
+| `declined` | processor said no | decline marker on the page | `declined` |
+| `failed` | did not pay | any other end: gateway never loaded, card form missing, bank challenge, no marker in time | `failed` |
+| `retry` | nothing submitted | pre-submit step broke | `failed` (after last attempt) |
 | `aborted` | guard tripped | amount changed between read and pay | `aborted` |
 
-`unknown` and `needs-human` are **results**, not errors. They are the honest answer.
+Every run ends in **paid** or **failed**. There is no state that waits for a person:
+an OTP or 3-D Secure challenge is a `failed` run with the challenge page captured,
+not a pause.
 
 ---
 
@@ -57,8 +58,6 @@ Anything that could have touched the card returns `paid`, `declined`, `unknown` 
 claimed ──► submitting ──► paid
    │            │      ──► declined
    │            │      ──► failed
-   │            │      ──► needs-human
-   │            │      ──► unknown
    └────────────┴──────► aborted
 ```
 

@@ -1,41 +1,39 @@
 /**
- * Jio Mobility recharge — transcribed from the recording at
+ * Jio Mobility recharge, transcribed from the recording at
  * .data/recordings/jio-mobility/2026-11-01T11-22-59-044Z
  *
- * Recorded flow (10 pages):
+ * Flow:
  *   1  /selfcare/recharge/mobility/                       enter number
- *   2  /selfcare/recharge/mobility/plans/?serviceId=...   plan list
+ *   2  /selfcare/recharge/mobility/plans/?serviceId=...   plan list (accordion)
  *   3  /api/jio-common-servlet/jiocommon/redirect
- *   4  pay.jio.com/JpgWebApp/home?paramx1=...             JioPay
- *   5  pay.jio.com/JpgWebApp/home/
- *   6  pay.jio.com/JpgWebApp/add-new-card/                card entry
- *   7  pay.jio.com/JpgWebApp/go-to-pg/
- *   8  securegw.paytmpayments.in/theia/selectCurrencyPage Paytm
- *   9  callback errorCode=810                             (user stopped here)
- *  10  /selfcare/recharge/status/
+ *   4  pay.jio.com/JpgWebApp/home?paramx1=...             JioPay, data via XHR
+ *   5  pay.jio.com/JpgWebApp/add-new-card/                card entry
+ *   6  securegw.paytmpayments.in/...                     Paytm processing
+ *   7  callback -> /selfcare/recharge/status/             result
  *
- * Recorded API sequence, which is what this adapter relies on:
- *   GET  /api/jio-recharge-service/recharge/mobility/number/<num>   validate
- *   GET  /api/jio-recharge-service/recharge/plans/serviceId/<num>   216 plans
- *   POST /api/jio-recharge-service/recharge/buy                    {planKey, selectedService}
- *   POST /api/jio-recharge-service/recharge/pay                    -> paymentURL
- *   POST pay.jio.com/jiopg/v1/authorize-card-operation              paymentMode "CCDC"
- *   POST securegw.paytmpayments.in/theia/api/v1/processTransaction
+ * APIs this adapter leans on:
+ *   GET  /api/jio-recharge-service/recharge/mobility/number/<num>
+ *   GET  /api/jio-recharge-service/recharge/plans/serviceId/<num>
+ *   POST /api/jio-recharge-service/recharge/buy
+ *   GET  pay.jio.com/jiopg/v1/payment-dashboard?paramx1=...
+ *   POST pay.jio.com/jiopg/v1/authorize-card-operation
  *
  * No captcha anywhere in the recorded flow.
  */
-import type { Page } from "playwright";
+import type { Locator, Page } from "playwright";
 import { capture, dumpDom } from "../../core/evidence.ts";
 import { formatMoney, sameMoney } from "../../core/money.ts";
 import type { Bill, BillingProvider, Card, PaymentOutcome, RunContext } from "../../core/types.ts";
 
 const ID = "jio-mobility";
-const VERSION = "2026.11.2";
+const VERSION = "2026.11.3";
 const RECHARGE = "https://www.jio.com/selfcare/recharge/mobility/";
-const PLANS_API = /\/api\/jio-recharge-service\/recharge\/plans\/serviceId\//;
-const NUMBER_API = /\/api\/jio-recharge-service\/recharge\/mobility\/number\//;
+const PLANS_API = /recharge\/plans\/serviceId\//;
+const NUMBER_API = /recharge\/mobility\/number\//;
+const DASHBOARD_API = /jiopg\/v1\/payment-dashboard/;
+const JIOPAY = /pay\.jio\.com/;
+const PAYTM = /paytm/i;
 
-/** One entry of the plans API. Field names are Jio's. */
 interface JioPlan {
   id: string;
   name: string;
@@ -51,15 +49,11 @@ interface PlansPayload {
   planCategories?: Array<{ subCategories?: Array<{ plans?: JioPlan[] }> }>;
 }
 
-function flattenPlans(payload: PlansPayload): JioPlan[] {
-  return (payload.planCategories ?? []).flatMap((c) => (c.subCategories ?? []).flatMap((s) => s.plans ?? []));
-}
+const flattenPlans = (p: PlansPayload): JioPlan[] =>
+  (p.planCategories ?? []).flatMap((c) => (c.subCategories ?? []).flatMap((s) => s.plans ?? []));
 
-/** "Validity - 70 Days" -> "70 Days". */
-function validityOf(plan: JioPlan): string | null {
-  const m = /Validity\s*-\s*([^.]{1,24})/i.exec(plan.description);
-  return m?.[1]?.trim() ?? null;
-}
+const validityOf = (plan: JioPlan): string | null =>
+  /Validity\s*-\s*([^.]{1,24})/i.exec(plan.description)?.[1]?.trim() ?? null;
 
 /** Rupees from the plan string amount, without touching floats. */
 function rupeesToMinor(amount: string): number {
@@ -67,39 +61,32 @@ function rupeesToMinor(amount: string): number {
   return Number(whole) * 100 + Number(frac.padEnd(2, "0").slice(0, 2));
 }
 
+const rupeeLabel = (minor: number): string => "\u20b9" + Math.round(minor / 100);
+
 /**
- * Step 1: enter the number and wait for the two API responses that prove the
- * number is valid and give us the plan catalogue.
+ * Enter the number, then wait for the two API responses that prove it is a Jio
+ * number and hand over the plan catalogue.
  *
- * Waiting on the response rather than on a selector is deliberate: the plan grid
- * is virtualised and its CSS-module class names change on every deploy.
+ * Waiting on the response rather than a selector is deliberate: the grid is
+ * virtualised and its CSS-module class names change on every deploy.
  */
 async function openPlans(ctx: RunContext, customerNumber: string): Promise<JioPlan[]> {
   const { page, log } = ctx;
   await page.goto(RECHARGE, { waitUntil: "domcontentloaded" });
 
-  const plansDone = page.waitForResponse((r) => PLANS_API.test(r.url()) && r.status() === 200, {
-    timeout: 60_000,
-  });
-  const numberDone = page.waitForResponse((r) => NUMBER_API.test(r.url()) && r.status() === 200, {
-    timeout: 60_000,
-  });
+  const plansDone = page.waitForResponse((r) => PLANS_API.test(r.url()) && r.status() === 200, { timeout: 60_000 });
+  const numberDone = page.waitForResponse((r) => NUMBER_API.test(r.url()) && r.status() === 200, { timeout: 60_000 });
 
   await page.getByLabel("Jio Number", { exact: true }).fill(customerNumber);
   await page.getByRole("button", { name: "Continue", exact: true }).first().click();
 
   const numberRes = await numberDone.catch(() => null);
   if (numberRes) {
-    const body = (await numberRes.json().catch(() => ({}))) as {
-      primaryService?: { serviceId?: string; billingType?: string };
-    };
+    const body = (await numberRes.json().catch(() => ({}))) as { primaryService?: { serviceId?: string } };
     if (!body.primaryService?.serviceId) throw new Error(customerNumber + " is not a Jio number");
-    log.info({ serviceId: body.primaryService.serviceId, billingType: body.primaryService.billingType }, "number valid");
   }
 
-  const plansRes = await plansDone;
-  const payload = (await plansRes.json()) as PlansPayload;
-  const plans = flattenPlans(payload);
+  const plans = flattenPlans((await (await plansDone).json()) as PlansPayload);
   if (plans.length === 0) throw new Error("plans API returned no plans");
   log.info({ plans: plans.length }, "plan catalogue loaded");
   return plans;
@@ -110,29 +97,21 @@ function pickPlan(plans: JioPlan[], targetAmountMinor: number): JioPlan {
   const matches = plans.filter((p) => rupeesToMinor(p.amount) === targetAmountMinor);
   if (matches.length === 0) {
     const seen = [...new Set(plans.map((p) => p.amount))].slice(0, 20).join(", ");
-    throw new Error(
-      "no plan at " + formatMoney({ amountMinor: targetAmountMinor, currency: "INR" }) + "; available: " + seen,
-    );
+    throw new Error("no plan at " + formatMoney({ amountMinor: targetAmountMinor, currency: "INR" }) + "; available: " + seen);
   }
-  // Prefer the plain recharge over add-ons and vouchers.
   return matches.find((p) => p.categoryLabel.toLowerCase().includes("popular")) ?? matches[0]!;
 }
 
 /**
- * Clicks Buy on the plan card whose price equals the plan we picked.
+ * Click Buy on the plan card priced for this plan.
  *
- * The plan grid is NOT one flat list. It is 6 collapsible sections
- * ("Top Trending Plans (15)", "1.5 GB/day Plans (7)", ...) and only one is open
- * at a time, so most plans are not in the DOM at all when the page settles.
- * A ₹666 plan lives under 1.5 GB/day and is invisible until that section opens.
- *
- * So: look in what is rendered, then walk the sections until the card appears.
- * Class names are CSS-module hashes and change on deploy; match on the exact
- * price text plus the stable accordion class instead.
+ * The grid is 6 collapsible sections and only one is open at a time, so most
+ * plans are not in the DOM when the page settles. Look in what is rendered,
+ * then open each section in turn until the card appears.
  */
 async function clickBuy(ctx: RunContext, plan: JioPlan): Promise<void> {
   const { page } = ctx;
-  const price = "\u20b9" + Math.round(rupeesToMinor(plan.amount) / 100);
+  const price = rupeeLabel(rupeesToMinor(plan.amount));
   const wanted = page.getByText(new RegExp("^" + price + "$"));
 
   const clickIfPresent = async (): Promise<boolean> => {
@@ -143,10 +122,8 @@ async function clickBuy(ctx: RunContext, plan: JioPlan): Promise<void> {
     return true;
   };
 
-  // 1. Maybe it is already rendered in the open section.
   if (await clickIfPresent()) return;
 
-  // 2. Otherwise open each collapsed section, one at a time, and look again.
   const triggers = page.locator(".j-accordion-panel__header-trigger");
   const total = await triggers.count();
   const seen: string[] = [];
@@ -157,45 +134,24 @@ async function clickBuy(ctx: RunContext, plan: JioPlan): Promise<void> {
     seen.push(label + (active ? " [open]" : ""));
     if (!active) {
       await trigger.click({ timeout: 5000 }).catch(() => undefined);
-      // Give the grid a beat to swap sections; no fixed sleep longer than this.
       await page.waitForTimeout(1200);
     }
     if (await clickIfPresent()) return;
   }
-
-  throw new Error(
-    "plan " + price + " not found in any section. Sections seen: " + seen.join(" | "),
-  );
+  throw new Error("plan " + price + " not found in any section. Sections seen: " + seen.join(" | "));
 }
 
-/** Where did clicking Buy take us? */
-type Screen = "jiopay" | "otp" | "unknown";
-
-async function afterBuy(ctx: RunContext): Promise<Screen> {
-  const { page } = ctx;
-  const otp = page.getByRole("textbox", { name: /otp|one.?time|verification code/i });
-  try {
-    await Promise.race([
-      page.waitForURL(/pay\.jio\.com/, { timeout: 60_000 }),
-      otp.waitFor({ state: "visible", timeout: 60_000 }),
-    ]);
-  } catch {
-    return "unknown";
+/** Every frame's locator: card fields may live inside the gateway iframe. */
+async function findInFrames(page: Page, selectors: readonly string[]): Promise<Locator | null> {
+  for (const frame of page.frames()) {
+    for (const sel of selectors) {
+      const loc = frame.locator(sel).first();
+      if (await loc.isVisible().catch(() => false)) return loc;
+    }
   }
-  if (/pay\.jio\.com/.test(page.url())) return "jiopay";
-  if (await otp.isVisible().catch(() => false)) return "otp";
-  return "unknown";
+  return null;
 }
 
-/**
- * Card entry on pay.jio.com/JpgWebApp/add-new-card/.
- *
- * NOT covered by the recording: the trace stops at the Paytm currency page, so
- * JioPay's card form DOM was never captured. These candidates cover the shapes
- * seen around it (autocomplete attributes, cc-* names, the ids on the Paytm page).
- * If none match, the run stops with needs-human and a screenshot. That is the
- * correct outcome: do not guess a card into a page you cannot read.
- */
 const CARD_FIELDS = {
   number: [
     'input[autocomplete="cc-number"]',
@@ -223,6 +179,57 @@ const CARD_FIELDS = {
   ],
 } as const;
 
+/**
+ * JioPay is a single-page app that paints a skeleton first and fills it from
+ * /jiopg/v1/payment-dashboard. The first live run's screenshot shows nothing but
+ * grey placeholder bars, so anything looking for a card field before that call
+ * returns is guaranteed to miss.
+ *
+ * Ready = the amount is on screen. The skeleton has no amount.
+ */
+async function waitForGateway(ctx: RunContext, amountMinor: number): Promise<boolean> {
+  const { page, log } = ctx;
+  await page.waitForURL(JIOPAY, { timeout: 90_000 }).catch(() => undefined);
+  await page.waitForLoadState("networkidle", { timeout: 30_000 }).catch(() => undefined);
+
+  const amount = new RegExp("\u20b9\\s?" + Math.round(amountMinor / 100));
+  const shown = await page
+    .getByText(amount)
+    .first()
+    .waitFor({ state: "visible", timeout: 45_000 })
+    .then(() => true)
+    .catch(() => false);
+
+  log.info({ ready: shown, url: page.url() }, "gateway readiness");
+  return shown;
+}
+
+/** The gateway lists payment modes first; open the card one. */
+const CARD_OPTION = /debit card|credit card|cards?|add new card|add card/i;
+
+async function chooseCardOption(ctx: RunContext): Promise<boolean> {
+  const { page, log } = ctx;
+
+  if (await findInFrames(page, CARD_FIELDS.number)) return true;
+
+  const groups = [
+    page.getByRole("button", { name: CARD_OPTION }),
+    page.getByRole("link", { name: CARD_OPTION }),
+    page.getByRole("radio", { name: CARD_OPTION }),
+    page.getByText(CARD_OPTION),
+  ];
+
+  for (const group of groups) {
+    if ((await group.count().catch(() => 0)) === 0) continue;
+    await group.first().click().catch(() => undefined);
+    if (await findInFrames(page, CARD_FIELDS.number)) {
+      log.info({ url: page.url() }, "card option opened");
+      return true;
+    }
+  }
+  return false;
+}
+
 async function fillCard(ctx: RunContext, card: Card): Promise<boolean> {
   const { page } = ctx;
   const values: Record<keyof typeof CARD_FIELDS, string> = {
@@ -234,16 +241,89 @@ async function fillCard(ctx: RunContext, card: Card): Promise<boolean> {
 
   let filled = 0;
   for (const field of Object.keys(CARD_FIELDS) as Array<keyof typeof CARD_FIELDS>) {
-    for (const sel of CARD_FIELDS[field]) {
-      const loc = page.locator(sel).first();
-      if (await loc.isVisible().catch(() => false)) {
-        await loc.fill(values[field]);
-        filled++;
-        break;
-      }
-    }
+    const loc = await findInFrames(page, CARD_FIELDS[field]);
+    if (!loc) continue;
+    await loc.fill(values[field]).catch(() => undefined);
+    filled++;
   }
   return filled >= 3;
+}
+
+/** Submit the card and read whatever the gateway and the biller say next. */
+async function submitCard(ctx: RunContext): Promise<boolean> {
+  const { page } = ctx;
+  const button = page
+    .getByRole("button", { name: /pay now|make payment|pay|proceed|confirm|continue|add card/i })
+    .first();
+  if (!(await button.isVisible().catch(() => false))) return false;
+  await button.click().catch(() => undefined);
+  return true;
+}
+
+const SUCCESS = /payment successful|recharge successful|successful|thank you|receipt|transaction complete/i;
+const REFUSED = /declined|not successful|failed|unable to process|invalid card|rejected|transaction failed/i;
+const REFUSED_CODE = /(?:declin\w*|fail\w*)[^0-9]{0,20}(\d{2,3})/i;
+const RECEIPT = /(?:transaction|order|reference|receipt)\s*(?:id|no|number)?\s*[:\-]?\s*([A-Z0-9][A-Z0-9\-]{5,})/i;
+
+/**
+ * After the card is submitted the run leaves JioPay for the Paytm gateway and
+ * comes back to Jio. There is no recorded trace of this leg, so instead of
+ * guessing a URL we poll for the one thing that matters: does the page say the
+ * payment worked, or that it did not.
+ *
+ * No human state: if neither appears before the deadline, that is a failure.
+ */
+async function observeOutcome(ctx: RunContext, bill: Bill): Promise<PaymentOutcome> {
+  const { page, log } = ctx;
+  const deadline = Date.now() + 150_000;
+  let lastUrl = page.url();
+
+  while (Date.now() < deadline) {
+    lastUrl = page.url();
+    const text = await page.locator("body").innerText().catch(() => "");
+
+    if (SUCCESS.test(text) && !REFUSED.test(text)) {
+      const receiptId = RECEIPT.exec(text)?.[1] ?? "JIO-" + bill.customerNumber + "-" + Date.now();
+      log.info({ receiptId, url: lastUrl }, "payment reported successful");
+      return {
+        status: "paid",
+        receiptId,
+        paidAt: new Date().toISOString(),
+        amount: bill.amount,
+        evidence: await capture(ctx, "paid"),
+      };
+    }
+
+    if (REFUSED.test(text)) {
+      const code = REFUSED_CODE.exec(text)?.[1] ?? null;
+      log.info({ code, url: lastUrl }, "payment refused");
+      return {
+        status: "declined",
+        code,
+        message: (text.match(REFUSED)?.[0] ?? "declined").slice(0, 120),
+        evidence: await capture(ctx, "declined"),
+      };
+    }
+
+    // A 3-D Secure challenge cannot be answered by this tool and must not hang
+    // the run forever; treat it as a plain failure with the page captured.
+    if (/3d secure|one.?time password|enter otp|verify with your bank/i.test(text)) {
+      log.warn({ url: lastUrl }, "bank challenge appeared");
+      return {
+        status: "failed",
+        reason: "bank challenge (OTP/3-D Secure) at " + lastUrl,
+        evidence: await capture(ctx, "bank-challenge"),
+      };
+    }
+
+    await page.waitForTimeout(2500);
+  }
+
+  return {
+    status: "failed",
+    reason: "no success or failure marker within 150s; last url " + lastUrl,
+    evidence: await capture(ctx, "no-outcome"),
+  };
 }
 
 export function createJioProvider(): BillingProvider {
@@ -254,12 +334,10 @@ export function createJioProvider(): BillingProvider {
 
     /**
      * Reads the plan catalogue and returns the plan worth targetAmountMinor.
-     * Verified against the live site: 216 plans, no captcha, no login.
+     * Verified live: 198-216 plans per number, no captcha, no login.
      */
     async lookupBill(ctx: RunContext, q): Promise<Bill> {
-      if (!q.targetAmountMinor) {
-        throw new Error("jio-mobility needs --amount (the plan price in rupees)");
-      }
+      if (!q.targetAmountMinor) throw new Error("jio-mobility needs --amount (the plan price in rupees)");
       const plans = await openPlans(ctx, q.customerNumber);
       const plan = pickPlan(plans, q.targetAmountMinor);
 
@@ -279,23 +357,16 @@ export function createJioProvider(): BillingProvider {
     },
 
     async payBill(ctx, req): Promise<PaymentOutcome> {
-      const { page, log } = ctx;
+      const { page } = ctx;
       const bill = req.bill;
 
-      // Everything up to the Buy click is pre-submit: if it breaks, nothing was
-      // charged, so report "retry" (the engine may try again) instead of letting
-      // the throw become a scary "unknown".
+      // ---- pre-submit: any failure here charged nothing, so it is retryable.
       let plan: JioPlan;
       try {
-        // Re-read the catalogue in this session: never pay a price you have not just seen.
         const plans = await openPlans(ctx, bill.customerNumber);
         const found = plans.find((p) => p.id === bill.raw.planId);
         if (!found) {
-          return {
-            status: "aborted",
-            reason: "plan " + bill.raw.planId + " is no longer offered",
-            evidence: await capture(ctx, "plan-gone"),
-          };
+          return { status: "aborted", reason: "plan " + bill.raw.planId + " is no longer offered", evidence: await capture(ctx, "plan-gone") };
         }
         if (!sameMoney(bill.amount, { amountMinor: rupeesToMinor(found.amount), currency: "INR" })) {
           return {
@@ -314,55 +385,46 @@ export function createJioProvider(): BillingProvider {
         };
       }
 
-      const screen = await afterBuy(ctx);
-      log.info({ screen, url: page.url() }, "left the plan page");
-
-      if (screen === "otp") {
+      // ---- gateway: wait for the SPA to finish loading before touching it.
+      if (!(await waitForGateway(ctx, bill.amount.amountMinor))) {
+        const dom = await dumpDom(ctx, "gateway-not-ready");
         return {
-          status: "needs-human",
-          reason: "otp",
-          prompt: "Jio wants an OTP before paying " + plan.amount + " for " + bill.customerNumber,
-          evidence: await capture(ctx, "otp"),
-        };
-      }
-      if (screen !== "jiopay") {
-        return {
-          status: "retry",
-          reason: "unexpected screen after Buy: " + page.url(),
-          evidence: await capture(ctx, "after-buy-unknown"),
+          status: "failed",
+          reason: "gateway never painted the amount" + (dom ? " (html: " + dom + ")" : ""),
+          evidence: await capture(ctx, "gateway-not-ready"),
         };
       }
 
-      // Card entry: the part the recording does not cover.
-      const ok = await fillCard(ctx, req.card);
-      if (!ok) {
-        const evidence = await capture(ctx, "card-form-unknown");
+      if (!(await chooseCardOption(ctx))) {
+        const dom = await dumpDom(ctx, "no-card-option");
+        const labels = await page.getByRole("button").allInnerTexts().catch(() => [] as string[]);
+        return {
+          status: "failed",
+          reason: "no card payment option found. buttons: " + labels.slice(0, 15).join(" | ") + (dom ? " (html: " + dom + ")" : ""),
+          evidence: await capture(ctx, "no-card-option"),
+        };
+      }
+
+      if (!(await fillCard(ctx, req.card))) {
         const dom = await dumpDom(ctx, "card-form-unknown");
         return {
-          status: "needs-human",
-          reason: "otp",
-          prompt:
-            "card form not recognised on " + page.url() +
-            (dom ? " — HTML saved to " + dom : "") +
-            "; fix CARD_FIELDS from it",
-          evidence,
+          status: "failed",
+          reason: "card form not recognised on " + page.url() + (dom ? " (html: " + dom + ")" : ""),
+          evidence: await capture(ctx, "card-form-unknown"),
         };
       }
 
-      await page
-        .getByRole("button", { name: /pay|proceed|continue|confirm|add card/i })
-        .first()
-        .click()
-        .catch(() => undefined);
-      await page.waitForLoadState("networkidle", { timeout: 30_000 }).catch(() => undefined);
+      if (!(await submitCard(ctx))) {
+        const dom = await dumpDom(ctx, "no-submit-button");
+        return {
+          status: "failed",
+          reason: "no submit button on the card form" + (dom ? " (html: " + dom + ")" : ""),
+          evidence: await capture(ctx, "no-submit-button"),
+        };
+      }
 
-      // Everything past this point is unverified against a real transaction.
-      return {
-        status: "needs-human",
-        reason: "3ds",
-        prompt: "card submitted; confirm the outcome at " + page.url() + " — this branch is not recorded yet",
-        evidence: await capture(ctx, "after-card-submit"),
-      };
+      // ---- post-submit: from here on the card may be charged.
+      return observeOutcome(ctx, bill);
     },
   };
 }

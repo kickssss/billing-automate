@@ -87,10 +87,12 @@ The recorded flow and the API sequence it relies on are documented at the top of
 [src/providers/jio/provider.ts](src/providers/jio/provider.ts).
 
 **Where the recording ends:** the trace stops at the Paytm currency page
-(`securegw.paytmpayments.in/theia/selectCurrencyPage`). JioPay's card form was
-never captured, so `CARD_FIELDS` in the adapter is a best-effort list. When it
-misses, the run stops with `needs-human` and a screenshot instead of guessing.
-That is the one branch left to fill in.
+(`securegw.paytmpayments.in/theia/selectCurrencyPage`). Everything past the card
+submit is inferred, not recorded, so `observeOutcome()` decides from what the page
+says rather than from a known URL.
+
+A run has exactly two ends: it pays, or it fails with a reason and a screenshot.
+There is no state that waits for a person.
 
 ---
 

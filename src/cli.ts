@@ -97,7 +97,7 @@ program
   .command("ledger")
   .description("recent attempts, or forget one so it can be retested")
   .option("--limit <n>", "rows", "20")
-  .option("--forget <id>", "delete a failed/needs-human/aborted row so the same plan can run again")
+  .option("--forget <id>", "delete a failed/aborted row so the same plan can run again")
   .action((opts: { limit: string; forget?: string }) => {
     const ledger = new Ledger(join(dataDir(), "ledger.sqlite"));
     try {

@@ -66,8 +66,14 @@ export async function runPayment(ctx: RunContext, opts: RunOptions): Promise<Run
     try {
       outcome = await provider.payBill(ctx, { bill, card });
     } catch (err) {
-      // The adapter died mid-flow: we may or may not have submitted. Not retryable.
-      outcome = { status: "unknown", message: `adapter threw: ${(err as Error).message}`, evidence: await capture(ctx, "error") };
+      // The adapter died mid-flow. It may or may not have submitted, so this is
+      // a failure we do not retry; "unconfirmed" in the reason is the flag that
+      // tells a human to check the card statement.
+      outcome = {
+        status: "failed",
+        reason: `adapter threw after submit (unconfirmed): ${(err as Error).message}`,
+        evidence: await capture(ctx, "error"),
+      };
     }
     log.info({ attempt, status: outcome.status }, "attempt finished");
 

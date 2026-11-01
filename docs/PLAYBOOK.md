@@ -15,7 +15,7 @@ A bill payment is two different problems stapled together:
 | --- | --- | --- |
 | Login, find customer, read bill, open payment page, fill card | Deterministic, same every time | Automate. Should be boring. |
 | CAPTCHA | Puzzle with a token at the end | **Solve via service, inject token, retry 2x, then fail** |
-| Device OTP, bank 3-D Secure | Needs a phone or a bank app | **Stop. Report `needs-human`.** |
+| Device OTP, bank 3-D Secure | Needs a phone or a bank app | **Fail the run and capture the page.** |
 
 Teams lose months trying to make row 2 behave like row 1. It does not, it will not,
 and the month it "works" is the month it silently breaks a card payment.
@@ -78,11 +78,11 @@ adapter's spec, its test list, and its backlog.
 | 1 | Bill page | normal | amount + reference visible | read, continue |
 | 2 | Login | session expired | cookies gone | log in, retry once |
 | 3 | "No dues" | already paid | nothing to do | exit `planned`, no payment |
-| 4 | OTP screen | new device / high amount | bank or biller challenge | `needs-human` |
-| 5 | Captcha | suspicious traffic | risk score too high | `needs-human`; fix the cause |
-| 6 | 3-D Secure iframe | issuer wants SCA | nested frame appears | `needs-human` |
+| 4 | OTP screen | new device / high amount | bank or biller challenge | `failed` + page captured |
+| 5 | Captcha | suspicious traffic | risk score too high | solver, else `failed` |
+| 6 | 3-D Secure iframe | issuer wants SCA | nested frame appears | `failed` + page captured |
 | 7 | Decline page | card rejected | processor said no | `declined` + code |
-| 8 | Timeout after submit | unknown | we clicked, no proof | `unknown`, never retry |
+| 8 | Timeout after submit | no proof | we clicked, no marker appeared | `failed`, never retry |
 
 A provider with 8 rows is normal. A provider where you cannot fill this table is a
 provider you should not automate yet.
@@ -164,24 +164,23 @@ Order of operations, and why:
 4. Fill the card, take a screenshot
 5. Click submit **once**
 6. Race the outcome markers
-7. Settle: `paid` | `declined` | `needs-human` | `unknown`
+7. Settle: `paid` | `declined` | `failed`
 
 Challenges, and what to actually do:
 
 | Challenge | Frequency | Automate? | Reality in 2026 |
 | --- | --- | --- | --- |
 | Captcha / Turnstile / reCAPTCHA | Occasional | **Yes — solver** | Returns a token; inject it, submit again, retry max 2 |
-| Biller OTP | Common | No | Only a phone finishes this. `needs-human` |
-| 3-D Secure challenge | Common on new devices | No | Bank-owned. `needs-human` |
+| Biller OTP | Common | No | Only a phone finishes this. The run `failed`; nothing to resume |
+| 3-D Secure challenge | Common on new devices | No | Bank-owned. The run `failed`; nothing to resume |
 | Device fingerprint check | Occasional | Yes | Persistent profile solves most of it |
 | Duplicate-payment block | Rare | Yes — read the message | Report `aborted`, not `paid` |
 
 The solver is a port (`src/core/challenge.ts` → `ChallengeSolver`): `noSolver` by default,
 `fixedSolver` for tests, `httpSolver` for CapSolver/2Captcha/any REST service. Swapping
 providers is one function, not a refactor.
-A gate that returns `null` is a `needs-human` outcome, which is a **correct result**,
-not a failure. Batch runs finish with a work queue of humans needing to act, and that is
-the intended design.
+A gate that returns `null` is a `failed` outcome. Nothing is queued for a person to
+finish later: the run either pays or it does not.
 
 ---
 
@@ -222,7 +221,7 @@ Rule: **fix items 1–4 before touching item 5.** Most teams do the reverse.
 
 ## Do not
 
-1. **Do not retry after the submit click.** Ever. `unknown` + a human is the correct answer.
+1. **Do not retry after the submit click.** Ever. A captured failure is the correct answer.
 2. **Do not put an LLM between "click pay" and "record the receipt".** Agents are fine for
    *discovery* ("find me the pay button"), fatal for *decision* ("did this succeed?").
 3. **Do not retry a captcha more than twice.** Two failures mean the score is bad, not
@@ -260,7 +259,7 @@ answer only when the biller offers nothing else.
 - [ ] Duplicate payment attempt is refused by the ledger
 - [ ] Canary running nightly for the last 7 days
 - [ ] `version` bumped and stamped in the ledger
-- [ ] Someone knows what to do when it returns `needs-human`
+- [ ] A failed run names the exact step it died on
 
 ---
 

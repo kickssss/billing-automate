@@ -8,24 +8,14 @@ import type { Money, PaymentOutcome } from "./types.ts";
  * SQLite table of every attempt. Its only job: make paying the same bill twice
  * impossible, and leave a record of what happened.
  */
-export type PaymentState =
-  | "claimed"
-  | "submitting"
-  | "paid"
-  | "declined"
-  | "failed"
-  | "needs-human"
-  | "unknown"
-  | "aborted";
+export type PaymentState = "claimed" | "submitting" | "paid" | "declined" | "failed" | "aborted";
 
 const ALLOWED: Record<PaymentState, readonly PaymentState[]> = {
   claimed: ["submitting", "aborted"],
-  submitting: ["paid", "declined", "failed", "needs-human", "unknown"],
+  submitting: ["paid", "declined", "failed"],
   paid: [],
   declined: [],
   failed: [],
-  "needs-human": [],
-  unknown: [],
   aborted: [],
 };
 
@@ -142,13 +132,8 @@ export class Ledger {
           detail: [outcome.code, outcome.message].filter(Boolean).join(": "),
           screenshot: outcome.evidence.screenshot,
         });
-      case "needs-human":
-        return this.#move(id, "needs-human", {
-          detail: `${outcome.reason}: ${outcome.prompt}`,
-          screenshot: outcome.evidence.screenshot,
-        });
-      case "unknown":
-        return this.#move(id, "unknown", { detail: outcome.message, screenshot: outcome.evidence.screenshot });
+      case "failed":
+        return this.#move(id, "failed", { detail: outcome.reason, screenshot: outcome.evidence.screenshot });
       case "retry":
         return this.#move(id, "failed", { detail: outcome.reason, screenshot: outcome.evidence.screenshot });
       case "aborted":
@@ -165,12 +150,12 @@ export class Ledger {
    * Deletes a row so the same plan can be tested again.
    *
    * Only rows that provably never charged anything may be forgotten. paid and
-   * unknown are permanent on purpose: forgetting those is how you pay twice.
+   * declined are permanent on purpose: forgetting a paid row is how you pay twice.
    */
   forget(id: string): { ok: true } | { ok: false; reason: string } {
     const row = this.get(id);
     if (!row) return { ok: false, reason: "no such payment" };
-    const safe: PaymentState[] = ["failed", "needs-human", "aborted"];
+    const safe: PaymentState[] = ["failed", "aborted"];
     if (!safe.includes(row.state)) {
       return { ok: false, reason: `refusing to forget a "${row.state}" payment` };
     }

@@ -38,20 +38,19 @@ export interface Evidence {
 }
 
 /**
- * What a payment attempt produced.
+ * What a payment attempt produced. There is no "you handle it" state: a run
+ * either pays or it does not.
  *
- *   paid         biller confirmed; receiptId is authoritative
- *   declined     processor said no
- *   needs-human  OTP or 3-D Secure; only a phone can finish this
- *   unknown      we submitted and cannot prove the result; never auto-retry
- *   retry        nothing was submitted; safe to try again
- *   aborted      a guard tripped before submit
+ *   paid      biller confirmed; receiptId is authoritative
+ *   declined  processor said no; try another card
+ *   failed    did not pay, for a stated reason
+ *   retry     nothing was submitted; the engine may try again
+ *   aborted   a guard tripped before submit
  */
 export type PaymentOutcome =
   | { status: "paid"; receiptId: string; paidAt: string; amount: Money; evidence: Evidence }
   | { status: "declined"; code: string | null; message: string; evidence: Evidence }
-  | { status: "needs-human"; reason: "otp" | "3ds"; prompt: string; evidence: Evidence }
-  | { status: "unknown"; message: string; evidence: Evidence }
+  | { status: "failed"; reason: string; evidence: Evidence }
   | { status: "retry"; reason: string; evidence: Evidence }
   | { status: "aborted"; reason: string; evidence: Evidence };
 
