@@ -161,6 +161,23 @@ export class Ledger {
     return row ? toRecord(row) : null;
   }
 
+  /**
+   * Deletes a row so the same plan can be tested again.
+   *
+   * Only rows that provably never charged anything may be forgotten. paid and
+   * unknown are permanent on purpose: forgetting those is how you pay twice.
+   */
+  forget(id: string): { ok: true } | { ok: false; reason: string } {
+    const row = this.get(id);
+    if (!row) return { ok: false, reason: "no such payment" };
+    const safe: PaymentState[] = ["failed", "needs-human", "aborted"];
+    if (!safe.includes(row.state)) {
+      return { ok: false, reason: `refusing to forget a "${row.state}" payment` };
+    }
+    this.#db.prepare("DELETE FROM payment WHERE id = ?").run(id);
+    return { ok: true };
+  }
+
   recent(limit = 20): PaymentRecord[] {
     const rows = this.#db.prepare("SELECT * FROM payment ORDER BY created_at DESC LIMIT ?").all(limit) as unknown as Row[];
     return rows.map(toRecord);

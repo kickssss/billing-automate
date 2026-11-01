@@ -121,25 +121,51 @@ function pickPlan(plans: JioPlan[], targetAmountMinor: number): JioPlan {
 /**
  * Clicks Buy on the plan card whose price equals the plan we picked.
  *
- * Class names are CSS-module hashes (Details_planCard__1lyyX) and change on
- * deploy, so match on the stable part: the class prefix plus the exact price.
+ * The plan grid is NOT one flat list. It is 6 collapsible sections
+ * ("Top Trending Plans (15)", "1.5 GB/day Plans (7)", ...) and only one is open
+ * at a time, so most plans are not in the DOM at all when the page settles.
+ * A ₹666 plan lives under 1.5 GB/day and is invisible until that section opens.
+ *
+ * So: look in what is rendered, then walk the sections until the card appears.
+ * Class names are CSS-module hashes and change on deploy; match on the exact
+ * price text plus the stable accordion class instead.
  */
 async function clickBuy(ctx: RunContext, plan: JioPlan): Promise<void> {
   const { page } = ctx;
   const price = "\u20b9" + Math.round(rupeesToMinor(plan.amount) / 100);
+  const wanted = page.getByText(new RegExp("^" + price + "$"));
 
-  const cards = page.locator('[class*="planCard"]');
-  const count = await cards.count();
-  for (let i = 0; i < count; i++) {
-    const card = cards.nth(i);
-    const text = (await card.locator('[class*="planText"]').first().innerText().catch(() => "")).trim();
-    if (text !== price) continue;
-
-    const buy = card.getByRole("button", { name: /buy/i }).or(card.getByText(/^Buy$/)).first();
+  const clickIfPresent = async (): Promise<boolean> => {
+    const card = page.locator('[class*="planCard"]').filter({ has: wanted });
+    if ((await card.count()) === 0) return false;
+    const buy = card.first().getByRole("button", { name: /buy/i }).or(card.first().getByText(/^Buy$/)).first();
     await buy.click();
-    return;
+    return true;
+  };
+
+  // 1. Maybe it is already rendered in the open section.
+  if (await clickIfPresent()) return;
+
+  // 2. Otherwise open each collapsed section, one at a time, and look again.
+  const triggers = page.locator(".j-accordion-panel__header-trigger");
+  const total = await triggers.count();
+  const seen: string[] = [];
+  for (let i = 0; i < total; i++) {
+    const trigger = triggers.nth(i);
+    const label = (await trigger.innerText().catch(() => "")).trim();
+    const active = (await trigger.getAttribute("class").catch(() => ""))?.includes("active");
+    seen.push(label + (active ? " [open]" : ""));
+    if (!active) {
+      await trigger.click({ timeout: 5000 }).catch(() => undefined);
+      // Give the grid a beat to swap sections; no fixed sleep longer than this.
+      await page.waitForTimeout(1200);
+    }
+    if (await clickIfPresent()) return;
   }
-  throw new Error("could not find a plan card priced " + price + " (scanned " + count + " cards)");
+
+  throw new Error(
+    "plan " + price + " not found in any section. Sections seen: " + seen.join(" | "),
+  );
 }
 
 /** Where did clicking Buy take us? */

@@ -97,13 +97,22 @@ program
 
 program
   .command("ledger")
-  .description("recent attempts")
+  .description("recent attempts, or forget one so it can be retested")
   .option("--limit <n>", "rows", "20")
-  .action((opts: { limit: string }) => {
+  .option("--forget <id>", "delete a failed/needs-human/aborted row so the same plan can run again")
+  .action((opts: { limit: string; forget?: string }) => {
     const ledger = new Ledger(join(dataDir(), "ledger.sqlite"));
     try {
+      if (opts.forget) {
+        const r = ledger.forget(opts.forget);
+        console.log(r.ok ? `forgotten ${opts.forget}` : `not forgotten: ${r.reason}`);
+        if (!r.ok) process.exitCode = 1;
+        return;
+      }
       for (const r of ledger.recent(Number(opts.limit))) {
-        console.log([r.createdAt, r.providerId, r.customerNumber, r.state, r.attempts, r.amountMinor, r.receiptId ?? "-"].join("\t"));
+        console.log(
+          [r.id, r.createdAt, r.providerId, r.customerNumber, r.state, r.attempts, r.amountMinor, r.receiptId ?? "-"].join("\t"),
+        );
       }
     } finally { ledger.close(); }
   });
