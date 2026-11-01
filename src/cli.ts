@@ -44,14 +44,19 @@ program
   .description("read a bill, never pays")
   .requiredOption("--provider <id>")
   .requiredOption("--customer <number>")
+  .option("--amount <rupees>", "recharge providers: the plan price to target")
   .option("--headed", "show the browser")
-  .action(async (opts: { provider: string; customer: string; headed?: boolean }) => {
+  .action(async (opts: { provider: string; customer: string; amount?: string; headed?: boolean }) => {
     const provider = getProvider(opts.provider);
     const ledger = new Ledger(join(dataDir(), "ledger.sqlite"));
     try {
       report(await withSession(opts.provider, Boolean(opts.headed), (ctx) =>
         runPayment(ctx, {
-          provider, ledger, query: { customerNumber: opts.customer },
+          provider, ledger,
+          query: {
+            customerNumber: opts.customer,
+            ...(opts.amount ? { targetAmountMinor: Math.round(Number(opts.amount) * 100) } : {}),
+          },
           card: null, mode: "dry-run", maxAmountMinor: Number.MAX_SAFE_INTEGER,
         })));
     } finally { ledger.close(); }
@@ -64,10 +69,11 @@ program
   .requiredOption("--customer <number>")
   .requiredOption("--card <name>", "key in config/cards.json")
   .option("--live", "actually submit")
+  .option("--amount <rupees>", "recharge providers: the plan price to target")
   .option("--max-amount <rupees>", "per-payment ceiling", "5000")
   .option("--attempts <n>", "retries for a non-submitted attempt", "3")
   .option("--headed", "show the browser")
-  .action(async (opts: { provider: string; customer: string; card: string; live?: boolean; maxAmount: string; attempts: string; headed?: boolean }) => {
+  .action(async (opts: { provider: string; customer: string; card: string; live?: boolean; amount?: string; maxAmount: string; attempts: string; headed?: boolean }) => {
     const provider = getProvider(opts.provider);
     const card = await getCard(opts.card);
     assertCardUsable(card);
@@ -77,7 +83,11 @@ program
     try {
       report(await withSession(opts.provider, Boolean(opts.headed), (ctx) =>
         runPayment(ctx, {
-          provider, ledger, query: { customerNumber: opts.customer },
+          provider, ledger,
+          query: {
+            customerNumber: opts.customer,
+            ...(opts.amount ? { targetAmountMinor: Math.round(Number(opts.amount) * 100) } : {}),
+          },
           card, mode,
           maxAmountMinor: Math.round(Number(opts.maxAmount) * 100),
           maxAttempts: Number(opts.attempts),

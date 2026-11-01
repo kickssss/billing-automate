@@ -3,7 +3,7 @@ import type { Card } from "./types.ts";
 
 /**
  * Cards live in one plain JSON file. No vault, no env indirection:
- * config/cards.json -> { "demo": { number, expiry, cvv, nameOnCard, kind } }
+ * config/cards.json -> { "primary": { number, expiry, cvv, nameOnCard, kind } }
  */
 type CardStore = Record<string, Card>;
 

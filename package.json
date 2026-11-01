@@ -9,7 +9,7 @@
   },
   "scripts": {
     "start": "node src/cli.ts",
-    "demo": "node src/providers/demo/site/server.ts --port 4600",
+    "inspect": "node scripts/inspect-jio.ts",
     "typecheck": "tsc --noEmit -p tsconfig.json",
     "test": "playwright test",
     "test:ui": "playwright test --ui"

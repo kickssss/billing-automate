@@ -1,12 +1,12 @@
 import { httpSolver, noSolver } from "../core/challenge.ts";
 import type { BillingProvider, ChallengeSolver } from "../core/types.ts";
-import { createDemoProvider } from "./demo/provider.ts";
+import { createJioProvider } from "./jio/provider.ts";
 
-/** Add a biller: one import, one line. */
-export function loadProviders(env: NodeJS.ProcessEnv = process.env): Map<string, BillingProvider> {
+/** Add a provider: one import, one line. */
+export function loadProviders(_env: NodeJS.ProcessEnv = process.env): Map<string, BillingProvider> {
   const map = new Map<string, BillingProvider>();
-  const demo = createDemoProvider({ baseUrl: env.DEMO_BILL_URL ?? "http://127.0.0.1:4600" });
-  map.set(demo.id, demo);
+  const jio = createJioProvider();
+  map.set(jio.id, jio);
   return map;
 }
 

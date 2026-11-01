@@ -1,22 +1,21 @@
 /**
- * Discovery recorder — the answer to "only the human knows the flow".
+ * Discovery recorder.
  *
- *   node src/tools/record.ts --provider acme-electric --url https://acme.example/login
+ *   node src/tools/record.ts --provider jio-mobility --url https://www.jio.com/selfcare/recharge/mobility/
  *
- * Open the browser, hand the mouse to the person who knows the process, and have
- * them do the whole thing once, exactly as they normally would. This records:
+ * A window opens. Do the flow once, by hand, exactly as you normally would.
+ * Come back to this terminal and press Enter. Produces:
  *
- *   trace.zip  every click, DOM snapshot, network call and source line
- *   *.har      every request/response
- *   *.png      a screenshot at each stop
+ *   trace.zip      every click, every DOM snapshot, every network call
+ *   recording.har  every request and response
+ *   steps.md       the URLs you visited, in order
+ *   final-state.png
  *
- * Then open the trace (npx playwright show-trace <file>) and read the real flow
- * instead of interviewing someone about it. A 20-minute trace replaces a week of
- * "what do you click next?".
+ * Then: npx playwright show-trace .data/recordings/<provider>/<stamp>/trace.zip
  *
- * Nothing is submitted by this tool. It only observes.
+ * This tool only watches. It never submits anything on its own.
  */
-import { mkdir } from "node:fs/promises";
+import { mkdir, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { createInterface } from "node:readline/promises";
 import { chromium } from "playwright";
@@ -61,11 +60,34 @@ const context = await chromium.launchPersistentContext(join(args.dataDir, "profi
 
 await context.tracing.start({ screenshots: true, snapshots: true, sources: true });
 const har = await context.tracing.startHar(join(outDir, "recording.har"));
+
+// Record the navigation trail: it becomes the step list the adapter is built from.
+const steps: Array<{ at: string; url: string }> = [];
+const seen = new Set<string>();
+const trail = (u: string): void => {
+  if (!u.startsWith("http") || seen.has(u)) return;
+  seen.add(u);
+  steps.push({ at: new Date().toISOString(), url: u });
+  console.log(`  [${steps.length}] ${u}`);
+};
+const wire = (p: import("playwright").Page): void => {
+  p.on("framenavigated", (f) => {
+    if (f === p.mainFrame()) trail(f.url());
+  });
+};
+// Existing page first, then anything the flow opens later.
+for (const p of context.pages()) wire(p);
+context.on("page", (p) => {
+  wire(p);
+  p.on("close", () => console.log("  (a tab was closed)"));
+});
+
 const page = context.pages()[0] ?? (await context.newPage());
 await page.goto(args.url, { waitUntil: "domcontentloaded" }).catch(() => undefined);
 
-console.log(`recording -> ${outDir}`);
-console.log("do the flow in the browser window; come back here when you are done");
+console.log(`\nrecording -> ${outDir}`);
+console.log("do the flow in the browser window, then come back here.");
+console.log("press Enter when you are done (or just close the window).\n");
 
 if (!args.headless) {
   if (args.seconds > 0) {
@@ -79,10 +101,41 @@ if (!args.headless) {
   await new Promise((r) => setTimeout(r, Math.max(args.seconds, 1) * 1000));
 }
 
-await page.screenshot({ path: join(outDir, "final-state.png"), fullPage: true });
-await har[Symbol.asyncDispose]();
-await context.tracing.stop({ path: join(outDir, "trace.zip") });
-await context.close();
+// The human may have closed the window; everything below tolerates that.
+const openPages = context.pages().filter((p) => !p.isClosed());
+const last = openPages.at(-1);
+if (last) {
+  try {
+    await last.screenshot({ path: join(outDir, "final-state.png"), fullPage: true, timeout: 15_000 });
+  } catch (err) {
+    console.log("final screenshot failed:", (err as Error).message.split("\n")[0]);
+  }
+} else {
+  console.log("(window already closed, no final screenshot)");
+}
 
-console.log(`\nwrote:\n  ${join(outDir, "trace.zip")}\n  ${join(outDir, "recording.har")}\n  ${join(outDir, "final-state.png")}`);
+const md = [
+  `# Recorded flow: ${args.provider}`,
+  "",
+  `Started at ${args.url}`,
+  "",
+  ...steps.map((s, i) => `${i + 1}. ${s.url}`),
+  "",
+].join("\n");
+await writeFile(join(outDir, "steps.md"), md, "utf8");
+
+try {
+  await har[Symbol.asyncDispose]();
+} catch { /* har already finalised */ }
+try {
+  await context.tracing.stop({ path: join(outDir, "trace.zip") });
+} catch (e) {
+  console.log("trace stop failed:", (e as Error).message);
+}
+await context.close().catch(() => undefined);
+
+console.log(`\n${steps.length} pages recorded. wrote:`);
+console.log(`  ${join(outDir, "trace.zip")}`);
+console.log(`  ${join(outDir, "recording.har")}`);
+console.log(`  ${join(outDir, "steps.md")}`);
 console.log(`\ninspect the flow:\n  npx playwright show-trace ${join(outDir, "trace.zip")}`);

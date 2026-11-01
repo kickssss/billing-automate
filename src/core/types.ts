@@ -85,6 +85,8 @@ export interface RunContext {
 
 export interface BillQuery {
   customerNumber: string;
+  /** Recharge-style providers: the exact plan amount to target, in minor units. */
+  targetAmountMinor?: number;
 }
 
 export interface PayRequest {

@@ -104,8 +104,8 @@ interface BillingProvider {
 Two methods. No retry logic, no ledger, no capture — those live in the runner so every
 provider gets them identically.
 
-Adding a biller = copy `src/providers/demo/`, change selectors, add one line to
-`src/providers/registry.ts`.
+One provider ships today: `src/providers/jio/`. Copy that folder for the next biller,
+change the selectors, add one line to `src/providers/registry.ts`.
 
 ---
 
@@ -126,5 +126,5 @@ Adding a biller = copy `src/providers/demo/`, change selectors, add one line to
 1. `src/core/runner.ts` — the flow (60 lines)
 2. `src/core/types.ts` — the domain, all in one file
 3. `src/core/ledger.ts` — the state machine
-4. `src/providers/demo/provider.ts` — what a real adapter looks like
+4. `src/providers/jio/provider.ts` — the real adapter, transcribed from a trace
 5. `src/core/challenge.ts` — captcha port and the HTTP solver

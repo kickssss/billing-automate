@@ -1,7 +1,10 @@
 # billing-automate
 
-Drives a biller's website with Playwright: read a bill, pay it with a debit/prepaid
-card, record what happened. One adapter per provider; one engine for all of them.
+Drives a provider's website with Playwright: read the charge, confirm the amount,
+pay with a debit/prepaid card, record what happened. One adapter per provider;
+one engine for all of them.
+
+**One provider today: Jio mobility recharge.**
 
 ---
 
@@ -12,56 +15,82 @@ You do not write the flow from scratch. You record it, then transcribe it.
 ### 1. Record the flow from the person who knows it
 
 ```bash
-node src/tools/record.ts --provider acme --url https://acme.example/login
+node src/tools/record.ts --provider <id> --url <start-url>
 ```
 
-Hand over the mouse. They do the whole payment once. Press Enter when done.
+Hand over the mouse. They do the whole flow once. Press Enter.
 
 ```bash
-npx playwright show-trace .data/recordings/acme/<stamp>/trace.zip
+npx playwright show-trace .data/recordings/<id>/<stamp>/trace.zip
 ```
 
-The trace has every click, every page, every redirect, every gateway iframe. That is
-your spec — not what someone remembers.
+Writes `trace.zip` (every page, network call, DOM snapshot), `recording.har`
+(every request/response) and `steps.md` (the URL trail).
 
-### 2. Copy the reference adapter
+### 2. Read the trace, not the human
+
+The HAR is where the real protocol lives. Filter it by host, pull the JSON
+bodies, and you get the exact API sequence, the plan ids, the field names.
+
+### 3. Copy the Jio adapter
 
 ```bash
-cp -r src/providers/demo src/providers/acme
+cp -r src/providers/jio src/providers/<id>
 ```
 
-Rewrite `src/providers/acme/provider.ts`. Two methods:
+Rewrite `src/providers/<id>/provider.ts`. Two methods:
 
 ```ts
-lookupBill(ctx, { customerNumber })  ->  Bill
-payBill(ctx, { bill, card })         ->  PaymentOutcome
+lookupBill(ctx, { customerNumber, targetAmountMinor })  ->  Bill
+payBill(ctx, { bill, card })                             ->  PaymentOutcome
 ```
 
-Delete the demo site folder from the copy (`src/providers/acme/site/`).
-
-### 3. Register it
+### 4. Register it
 
 One line in `src/providers/registry.ts`:
 
 ```ts
-const acme = createAcmeProvider({ baseUrl: env.ACME_URL ?? "https://acme.example" });
+const acme = createAcmeProvider();
 map.set(acme.id, acme);
 ```
 
-### 4. Run read-only until it is boring
+### 5. Read-only until it is boring
 
 ```bash
-node src/cli.ts lookup --provider acme --customer 12345 --headed
+node src/cli.ts lookup --provider <id> --customer <number> --amount <rupees> --headed
 ```
 
-`--headed` so you can watch. Repeat until it works 10 times in a row. This step moves
-no money and cannot hurt anything.
+Repeat until it works 10 times in a row. Moves no money.
 
-### 5. Then one live payment
+### 6. Then one live payment
 
 ```bash
-node src/cli.ts pay --provider acme --customer 12345 --card demo --live --max-amount 1
+node src/cli.ts pay --provider <id> --customer <number> --card primary --amount <rupees> --live
 ```
+
+---
+
+## Jio, specifically
+
+```bash
+export PLAYWRIGHT_BROWSERS_PATH="$PWD/.playwright-browsers"
+cp config/cards.example.json config/cards.json
+
+# read the plan catalogue (safe, no money)
+node src/cli.ts lookup --provider jio-mobility --customer <jio-number> --amount 349
+```
+
+Verified working on 2026-11-01: number validated, 216 plans loaded, ₹349 plan
+selected, bill returned with its planKey.
+
+The recorded flow and the API sequence it relies on are documented at the top of
+[src/providers/jio/provider.ts](src/providers/jio/provider.ts).
+
+**Where the recording ends:** the trace stops at the Paytm currency page
+(`securegw.paytmpayments.in/theia/selectCurrencyPage`). JioPay's card form was
+never captured, so `CARD_FIELDS` in the adapter is a best-effort list. When it
+misses, the run stops with `needs-human` and a screenshot instead of guessing.
+That is the one branch left to fill in.
 
 ---
 
@@ -70,41 +99,21 @@ node src/cli.ts pay --provider acme --customer 12345 --card demo --live --max-am
 | # | File | Why |
 | --- | --- | --- |
 | 1 | `src/core/runner.ts` | the whole flow, ~60 lines |
-| 2 | `src/providers/demo/provider.ts` | what an adapter looks like |
+| 2 | `src/providers/jio/provider.ts` | the real adapter |
 | 3 | `src/core/types.ts` | every type, one file |
 
-Then `docs/FLOW.md` (one page) and `docs/PLAYBOOK.md` (how to build the next adapter).
+Then `docs/FLOW.md` (one page) and `docs/PLAYBOOK.md` (how to build the next one).
 
 ---
 
-## Run the demo first
+## Tests
 
 ```bash
-npm install
-npx playwright install chromium
-cp config/cards.example.json config/cards.json
-
-node src/providers/demo/site/server.ts --port 4600    # terminal 1
+npm test
 ```
 
-```bash
-export DEMO_BILL_URL=http://127.0.0.1:4600
-
-node src/cli.ts lookup --provider demo-bill --customer 100200
-node src/cli.ts pay --provider demo-bill --customer 100200 --card demo           # dry-run
-node src/cli.ts pay --provider demo-bill --customer 100200 --card demo --live
-node src/cli.ts ledger
-```
-
-The fake biller picks a branch from the customer number:
-
-| Prefix | Branch |
-| --- | --- |
-| anything else | pays straight through |
-| `8` | captcha step |
-| `9` | OTP step |
-
-`npm test` — 14 tests, ~6s, no network, no money.
+10 tests, ~1s, no browser, no network, no money. They cover the engine: ledger
+claims, retry budget, guards, terminal outcomes.
 
 ---
 
@@ -139,9 +148,11 @@ src/
     logger.ts      JSON logs on stderr
   providers/
     registry.ts    provider id -> adapter; solver from env
-    demo/          reference adapter + the fake biller it drives
-  tools/record.ts  record a human doing the flow -> trace + HAR
+    jio/           Jio mobility recharge, transcribed from a recording
+  tools/record.ts  record a human doing the flow -> trace + HAR + steps.md
   cli.ts
+scripts/
+  inspect-jio.ts      step inspector: dumps plans, then whatever page you stop on
 config/cards.example.json
 docs/FLOW.md       the flow, one page
 docs/PLAYBOOK.md   how to build an adapter for a new provider
@@ -153,41 +164,30 @@ docs/PLAYBOOK.md   how to build an adapter for a new provider
 
 ```
 providers                                  list registered providers
-lookup   --provider --customer [--headed]  read a bill, never pays
+lookup   --provider --customer             read the charge, never pays
+         [--amount N] [--headed]
 pay      --provider --customer --card      dry-run by default
-         [--live] [--max-amount N] [--attempts N] [--headed]
+         [--live] [--amount N] [--max-amount N] [--attempts N] [--headed]
 ledger   [--limit N]                       recent attempts
 ```
 
-## Cards
-
-`config/cards.json`, plain JSON:
-
-```json
-{ "demo": { "number": "4111111111111111", "expiry": "12/30", "cvv": "123",
-            "nameOnCard": "Ada", "kind": "debit" } }
-```
-
-Gitignored so only `cards.example.json` is in the repo.
-
 ## Captcha solving
 
-Set both vars and `httpSolver` is used:
+Jio showed no captcha. If a provider does, set both vars and `httpSolver` is used:
 
 ```bash
 export SOLVER_URL=https://api.capsolver.com
 export SOLVER_KEY=...
 ```
 
-Without them, a captcha ends as `failed` after `--attempts` tries, with the reason in
-the ledger. Request/response mapping lives only in `src/core/challenge.ts`.
+Without them, a captcha ends as `failed` after `--attempts` tries, with the reason
+in the ledger.
 
 ## Environment
 
 | Var | Default | Use |
 | --- | --- | --- |
 | `DATA_DIR` | `.data` | profiles, artifacts, ledger |
-| `DEMO_BILL_URL` | `http://127.0.0.1:4600` | demo provider base url |
 | `CARDS_FILE` | `config/cards.json` | card store |
 | `SOLVER_URL` / `SOLVER_KEY` | unset | enable captcha solving |
 | `HEADED` | unset | `1` shows the browser |
