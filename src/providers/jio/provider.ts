@@ -152,32 +152,73 @@ async function findInFrames(page: Page, selectors: readonly string[]): Promise<L
   return null;
 }
 
+/** Same search, by accessible label: the card inputs have no attributes to match. */
+async function findByLabel(page: Page, label: RegExp): Promise<Locator | null> {
+  for (const frame of page.frames()) {
+    const loc = frame.getByLabel(label).first();
+    if (await loc.isVisible().catch(() => false)) return loc;
+  }
+  return null;
+}
+
+/** CSS first, then the visible label. */
+async function findCardField(page: Page, field: CardFieldName): Promise<Locator | null> {
+  return (await findInFrames(page, CARD_FIELDS[field].css)) ?? (await findByLabel(page, CARD_FIELDS[field].label));
+}
+
+/**
+ * Card form fields, from the live add-new-card screenshot:
+ *
+ *   Pay via new card
+ *     Card number      [4111 1111 1111 1111]  (VISA logo appears once valid)
+ *     Expiry (MM/YY)   [12/30]     CVV [•••]
+ *     Name on the card [__________]
+ *     [ Proceed ]  <- disabled until every field is valid
+ *
+ * The inputs carry no autocomplete or placeholder, so labels are the reliable
+ * handle. Each field is tried by CSS, then by its visible label.
+ */
 const CARD_FIELDS = {
-  number: [
-    'input[autocomplete="cc-number"]',
-    'input[name*="cardNumber" i]',
-    'input[id*="cardNumber" i]',
-    'input[placeholder*="card number" i]',
-  ],
-  expiry: [
-    'input[autocomplete="cc-exp"]',
-    'input[name*="expiry" i]',
-    'input[id*="expiry" i]',
-    'input[placeholder*="mm" i]',
-  ],
-  cvv: [
-    'input[autocomplete="cc-csc"]',
-    'input[name*="cvv" i]',
-    'input[id*="cvv" i]',
-    'input[placeholder*="cvv" i]',
-  ],
-  name: [
-    'input[autocomplete="cc-name"]',
-    'input[name*="cardHolder" i]',
-    'input[id*="cardName" i]',
-    'input[placeholder*="name on card" i]',
-  ],
+  number: {
+    css: [
+      'input[autocomplete="cc-number"]',
+      'input[name*="cardNumber" i]',
+      'input[id*="cardNumber" i]',
+      'input[placeholder*="card number" i]',
+    ],
+    label: /card number/i,
+  },
+  expiry: {
+    css: [
+      'input[autocomplete="cc-exp"]',
+      'input[name*="expiry" i]',
+      'input[id*="expiry" i]',
+      'input[placeholder*="mm" i]',
+    ],
+    label: /expiry|mm\s*\/\s*yy/i,
+  },
+  cvv: {
+    css: [
+      'input[autocomplete="cc-csc"]',
+      'input[name*="cvv" i]',
+      'input[id*="cvv" i]',
+      'input[placeholder*="cvv" i]',
+    ],
+    label: /cvv|cvc|security code/i,
+  },
+  name: {
+    css: [
+      'input[autocomplete="cc-name"]',
+      'input[name*="cardHolder" i]',
+      'input[name*="nameOnCard" i]',
+      'input[id*="cardName" i]',
+      'input[placeholder*="name on card" i]',
+    ],
+    label: /name on the card|name on card|cardholder/i,
+  },
 } as const;
+
+type CardFieldName = keyof typeof CARD_FIELDS;
 
 /**
  * JioPay is a single-page app that paints a skeleton first and fills it from
@@ -224,7 +265,7 @@ async function waitForCardForm(ctx: RunContext, timeoutMs = 30_000): Promise<boo
   const { page } = ctx;
   const deadline = Date.now() + timeoutMs;
   while (Date.now() < deadline) {
-    if (await findInFrames(page, CARD_FIELDS.number)) return true;
+    if (await findCardField(page, "number")) return true;
     await page.waitForTimeout(800);
   }
   return false;
@@ -233,7 +274,7 @@ async function waitForCardForm(ctx: RunContext, timeoutMs = 30_000): Promise<boo
 async function chooseCardOption(ctx: RunContext): Promise<boolean> {
   const { page, log } = ctx;
 
-  if (await findInFrames(page, CARD_FIELDS.number)) return true;
+  if (await findCardField(page, "number")) return true;
 
   // 1. The list row, matched on its stable design-system container.
   const row = page.locator(".j-listBlock").filter({ hasText: CARD_OPTION }).first();
@@ -269,9 +310,14 @@ async function chooseCardOption(ctx: RunContext): Promise<boolean> {
  * Fill the card. Number first: most gateways reveal expiry and CVV only after
  * the BIN is accepted, so the later fields get their own short wait.
  */
-async function fillCard(ctx: RunContext, card: Card): Promise<boolean> {
-  const { page } = ctx;
-  const values: Record<keyof typeof CARD_FIELDS, string> = {
+export interface FillReport {
+  filled: CardFieldName[];
+  missing: CardFieldName[];
+}
+
+async function fillCard(ctx: RunContext, card: Card): Promise<FillReport> {
+  const { page, log } = ctx;
+  const values: Record<CardFieldName, string> = {
     number: card.number,
     expiry: card.expiry,
     cvv: card.cvv,
@@ -279,43 +325,54 @@ async function fillCard(ctx: RunContext, card: Card): Promise<boolean> {
   };
 
   /** Fill, then read the value back. A fill that silently fails must not count. */
-  const fillOne = async (field: keyof typeof CARD_FIELDS): Promise<boolean> => {
+  const fillOne = async (field: CardFieldName): Promise<boolean> => {
     const deadline = Date.now() + (field === "number" ? 15_000 : 10_000);
     while (Date.now() < deadline) {
-      const loc = await findInFrames(page, CARD_FIELDS[field]);
+      const loc = await findCardField(page, field);
       if (loc) {
         await loc.fill(values[field]).catch(() => undefined);
         const got = (await loc.inputValue().catch(() => "")).replace(/\s+/g, "");
         const want = values[field].replace(/\s+/g, "");
         if (got.length > 0 && got.replace(/[*\u2022]/g, "").startsWith(want.slice(0, 4))) return true;
-        await page.waitForTimeout(600);
-        continue;
       }
       await page.waitForTimeout(600);
     }
     return false;
   };
 
-  const done: string[] = [];
-  const missing: string[] = [];
-  for (const field of ["number", "expiry", "cvv", "name"] as Array<keyof typeof CARD_FIELDS>) {
-    if (await fillOne(field)) done.push(field);
+  const filled: CardFieldName[] = [];
+  const missing: CardFieldName[] = [];
+  for (const field of ["number", "expiry", "cvv", "name"] as CardFieldName[]) {
+    if (await fillOne(field)) filled.push(field);
     else missing.push(field);
-    if (field === "number" && done.length === 0) return false;
   }
-  return done.length >= 3;
+  log.info({ filled, missing }, "card form filled");
+  return { filled, missing };
 }
 
-/** Submit the card. Returns the button label it clicked, or null. */
-async function submitCard(ctx: RunContext): Promise<string | null> {
+export type SubmitResult = { label: string } | { disabled: true } | null;
+
+/**
+ * Press Proceed. It is disabled until every field is valid, so clicking it too
+ * early does nothing at all — which looks exactly like a hang.
+ */
+async function submitCard(ctx: RunContext): Promise<SubmitResult> {
   const { page } = ctx;
   const button = page
     .getByRole("button", { name: /pay now|make payment|^pay$|proceed|confirm|continue|add card|save card/i })
     .first();
   if (!(await button.isVisible().catch(() => false))) return null;
+
+  const deadline = Date.now() + 10_000;
+  while (Date.now() < deadline) {
+    if (await button.isEnabled().catch(() => false)) break;
+    await page.waitForTimeout(500);
+  }
+  if (!(await button.isEnabled().catch(() => false))) return { disabled: true };
+
   const label = ((await button.innerText().catch(() => "")) || "submit").trim() || "submit";
   await button.click().catch(() => undefined);
-  return label;
+  return { label };
 }
 
 const SUCCESS = /payment successful|recharge successful|successful|thank you|receipt|transaction complete/i;
@@ -473,19 +530,20 @@ export function createJioProvider(): BillingProvider {
       const cardDom = await dumpDom(ctx, "card-page");
       log.info({ url: page.url(), html: cardDom }, "card form opened");
 
-      if (!(await fillCard(ctx, req.card))) {
+      const fill = await fillCard(ctx, req.card);
+      if (fill.missing.includes("number")) {
         const dom = await dumpDom(ctx, "card-form-unknown");
         return {
           status: "failed",
-          reason: "could not fill the card form on " + page.url() + (dom ? " (html: " + dom + ")" : ""),
+          reason: "card number field not found on " + page.url() + (dom ? " (html: " + dom + ")" : ""),
           evidence: await capture(ctx, "card-form-unknown"),
         };
       }
 
       await capture(ctx, "card-filled");
 
-      const submitLabel = await submitCard(ctx);
-      if (!submitLabel) {
+      const submit = await submitCard(ctx);
+      if (submit === null) {
         const dom = await dumpDom(ctx, "no-submit-button");
         return {
           status: "failed",
@@ -493,7 +551,17 @@ export function createJioProvider(): BillingProvider {
           evidence: await capture(ctx, "no-submit-button"),
         };
       }
-      log.info({ submitLabel }, "card submitted");
+      if ("disabled" in submit) {
+        const dom = await dumpDom(ctx, "submit-disabled");
+        return {
+          status: "failed",
+          reason:
+            "Proceed stayed disabled after 10s; unfilled: " + (fill.missing.join(", ") || "none") +
+            (dom ? " (html: " + dom + ")" : ""),
+          evidence: await capture(ctx, "submit-disabled"),
+        };
+      }
+      log.info({ submitLabel: submit.label, missing: fill.missing }, "card submitted");
 
       // ---- post-submit: from here on the card may be charged.
       return observeOutcome(ctx, bill);
