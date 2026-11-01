@@ -33,9 +33,8 @@ export interface Card {
 
 export interface Evidence {
   url: string;
-  title: string;
+  /** Null when the screenshot failed; the run still records the outcome. */
   screenshot: string | null;
-  traceDir: string;
 }
 
 /**

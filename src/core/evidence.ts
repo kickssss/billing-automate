@@ -14,10 +14,5 @@ export async function capture(ctx: RunContext, label: string): Promise<Evidence>
     ctx.log.warn({ err }, "screenshot failed");
     screenshot = null;
   }
-  return {
-    url: ctx.page.url(),
-    title: await ctx.page.title().catch(() => ""),
-    screenshot,
-    traceDir: ctx.artifactsDir,
-  };
+  return { url: ctx.page.url(), screenshot };
 }

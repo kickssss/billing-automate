@@ -38,7 +38,6 @@ export interface IntentKey {
 
 export interface PaymentRecord {
   id: string;
-  idempotencyKey: string;
   providerId: string;
   providerVersion: string;
   customerNumber: string;
@@ -205,7 +204,6 @@ interface Row {
 
 const toRecord = (r: Row): PaymentRecord => ({
   id: r.id,
-  idempotencyKey: r.idempotency_key,
   providerId: r.provider_id,
   providerVersion: r.provider_version,
   customerNumber: r.customer_number,

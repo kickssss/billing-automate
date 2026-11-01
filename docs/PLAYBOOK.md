@@ -161,7 +161,7 @@ Order of operations, and why:
 1. Re-enter the flow and **re-read the bill** in the same session you will pay from
 2. Compare to the quoted bill; abort on mismatch
 3. Claim the intent in the ledger (UNIQUE key = no double payment)
-4. Fill the card, take a **masked** screenshot
+4. Fill the card, take a screenshot
 5. Click submit **once**
 6. Race the outcome markers
 7. Settle: `paid` | `declined` | `needs-human` | `unknown`
@@ -255,7 +255,7 @@ answer only when the biller offers nothing else.
 - [ ] Branch table filled in, every row mapped to an outcome
 - [ ] `lookup` succeeds 3× consecutively, headless, no manual step
 - [ ] Offline contract tests pass
-- [ ] One live payment, receipt id stored, screenshot masked
+- [ ] One live payment, receipt id stored, screenshot on disk
 - [ ] Duplicate payment attempt is refused by the ledger
 - [ ] Canary running nightly for the last 7 days
 - [ ] `version` bumped and stamped in the ledger

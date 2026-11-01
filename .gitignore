@@ -1,7 +1,7 @@
-.data/
-config/cards.json
-.playwright-browsers/
-.npm-cache/
 node_modules/
-playwright-report/
+.npm-cache/
+.playwright-browsers/
+.data*/
 test-results/
+playwright-report/
+config/cards.json

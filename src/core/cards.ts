@@ -1,18 +1,14 @@
 import { readFile } from "node:fs/promises";
-import type { Card, CardKind } from "./types.ts";
+import type { Card } from "./types.ts";
 
 /**
  * Cards live in one plain JSON file. No vault, no env indirection:
  * config/cards.json -> { "demo": { number, expiry, cvv, nameOnCard, kind } }
  */
-export type CardStore = Record<string, Card>;
+type CardStore = Record<string, Card>;
 
-export async function loadCards(path = process.env.CARDS_FILE ?? "config/cards.json"): Promise<CardStore> {
-  return JSON.parse(await readFile(path, "utf8")) as CardStore;
-}
-
-export async function getCard(ref: string, path?: string): Promise<Card> {
-  const cards = await loadCards(path);
+export async function getCard(ref: string, path = process.env.CARDS_FILE ?? "config/cards.json"): Promise<Card> {
+  const cards = JSON.parse(await readFile(path, "utf8")) as CardStore;
   const card = cards[ref];
   if (!card) throw new Error(`no card "${ref}" in card store; have: ${Object.keys(cards).join(", ")}`);
   return card;
@@ -46,5 +42,3 @@ export function assertCardUsable(card: Card, now = new Date()): void {
   if (new Date(Date.UTC(year, month, 1)) <= now) throw new Error("card is expired");
   if (!/^\d{3,4}$/.test(card.cvv)) throw new Error("cvv must be 3-4 digits");
 }
-
-export const KINDS: readonly CardKind[] = ["debit", "prepaid", "credit"];

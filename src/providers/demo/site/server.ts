@@ -13,7 +13,7 @@ import { randomUUID } from "node:crypto";
 import { pathToFileURL } from "node:url";
 
 export const DEMO_CAPTCHA_TOKEN = "demo-human-token";
-export const DEMO_CAPTCHA_SITEKEY = "demo-sitekey-6Lc";
+const DEMO_CAPTCHA_SITEKEY = "demo-sitekey-6Lc";
 
 const money = (minor: number): string =>
   new Intl.NumberFormat("en-IN", { minimumFractionDigits: 2, maximumFractionDigits: 2 }).format(minor / 100);
@@ -23,7 +23,7 @@ const period = (): string => {
   return `${d.getUTCFullYear()}-${String(d.getUTCMonth() + 1).padStart(2, "0")}`;
 };
 
-export function amountFor(customer: string): number {
+function amountFor(customer: string): number {
   let h = 0;
   for (const ch of customer) h = (h * 31 + ch.charCodeAt(0)) % 1_000_000;
   return 10_000 + (h % 490_000);
